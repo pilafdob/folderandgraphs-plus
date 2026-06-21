@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.0
+
+- Replace floating rings with a toggleable soft glow and 1-10 strength controls.
+- Scope glow to exact folder nodes so it does not apply to child notes or descendants by default.
+- Ignore legacy ring counts when loading saved folder colour rules.
+
 ## 1.4.0
 
 - Add nested folder child customizations under folder colour rules.

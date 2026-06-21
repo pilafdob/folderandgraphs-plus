@@ -1140,7 +1140,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         color: parseHexGraphColor(raw.color) ? raw.color : DEFAULT_FOLDER_RULE_COLOR,
         inheritToChildren: typeof raw.inheritToChildren === "boolean" ? raw.inheritToChildren : true,
         colorLinks: typeof raw.colorLinks === "boolean" ? raw.colorLinks : true,
-        rings: normalizeFolderRuleRings(raw.rings),
+        glow: raw.glow === true,
+        glowStrength: normalizeFolderGlowStrength(raw.glowStrength),
         children: this.parseFolderColorChildRules(raw.children)
       });
     }
@@ -1170,7 +1171,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         color: parseHexGraphColor(raw.color) ? raw.color : DEFAULT_FOLDER_RULE_COLOR,
         inheritToChildren: true,
         colorLinks: true,
-        rings: 0,
+        glow: false,
+        glowStrength: DEFAULT_FOLDER_GLOW_STRENGTH,
         children: []
       });
     }
@@ -1198,7 +1200,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         type: raw.type,
         target: raw.target,
         colorLinks: typeof raw.colorLinks === "boolean" ? raw.colorLinks : true,
-        rings: normalizeFolderRuleRings(raw.rings),
+        glow: raw.glow === true,
+        glowStrength: normalizeFolderGlowStrength(raw.glowStrength),
         children: this.parseFolderColorChildRules(raw.children)
       });
     }
@@ -1398,7 +1401,8 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
               color: DEFAULT_FOLDER_RULE_COLOR,
               inheritToChildren: true,
               colorLinks: true,
-              rings: 0,
+              glow: false,
+              glowStrength: DEFAULT_FOLDER_GLOW_STRENGTH,
               children: []
             });
             await this.saveAndRefresh();
@@ -1474,20 +1478,19 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
         });
     });
 
-    this.addToggleTag(setting, "Rings");
-    setting.addText((text) => {
-      text.inputEl.type = "number";
-      text.inputEl.min = "0";
-      text.inputEl.max = String(MAX_FOLDER_RULE_RINGS);
-      text.inputEl.step = "1";
-      text
-        .setPlaceholder("0")
-        .setValue(String(normalizeFolderRuleRings(rule.rings)))
+    this.addToggleTag(setting, "Glow");
+    setting.addToggle((toggle) => {
+      toggle
+        .setTooltip("Show a soft glow around this folder node")
+        .setValue(rule.glow)
         .onChange(async (value) => {
-          rule.rings = normalizeFolderRuleRings(value);
+          rule.glow = value;
           await this.saveAndRefresh();
+          this.renderSettings();
         });
     });
+
+    this.addGlowStrengthControls(setting, rule);
 
     setting.addButton((button) => {
       button
@@ -1498,7 +1501,8 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
             type: "folder",
             target: "",
             colorLinks: true,
-            rings: 0,
+            glow: false,
+            glowStrength: DEFAULT_FOLDER_GLOW_STRENGTH,
             children: []
           });
           await this.saveAndRefresh();
@@ -1542,6 +1546,39 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
     }
 
     return rule.type === "combined" ? "Combined same-name folder" : "Folder and descendants";
+  }
+
+  private addGlowStrengthControls(setting: Setting, rule: FolderColorRule | FolderColorChildRule): void {
+    const strength = normalizeFolderGlowStrength(rule.glowStrength);
+
+    setting.addButton((button) => {
+      button
+        .setIcon("minus")
+        .setTooltip("Decrease glow strength")
+        .setDisabled(!rule.glow || strength <= MIN_FOLDER_GLOW_STRENGTH)
+        .onClick(async () => {
+          rule.glowStrength = normalizeFolderGlowStrength(strength - 1);
+          await this.saveAndRefresh();
+          this.renderSettings();
+        });
+    });
+
+    setting.controlEl.createSpan({
+      text: String(strength),
+      cls: "folderandgraphs-plus-toggle-tag"
+    });
+
+    setting.addButton((button) => {
+      button
+        .setIcon("plus")
+        .setTooltip("Increase glow strength")
+        .setDisabled(!rule.glow || strength >= MAX_FOLDER_GLOW_STRENGTH)
+        .onClick(async () => {
+          rule.glowStrength = normalizeFolderGlowStrength(strength + 1);
+          await this.saveAndRefresh();
+          this.renderSettings();
+        });
+    });
   }
 
   private async saveAndRefresh(): Promise<void> {

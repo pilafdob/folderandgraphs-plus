@@ -14,7 +14,7 @@ import {
   getGraphNodePluginColors,
   getFolderGroupColor,
   getFolderGroupColorForPaths,
-  normalizeFolderRuleRings,
+  normalizeFolderGlowStrength,
   parseHexGraphColor
 } from "../testable/graphGroups.mjs";
 
@@ -82,11 +82,11 @@ test("invalid hex colours are ignored", () => {
   assert.equal(parseHexGraphColor("#12345g"), null);
 });
 
-test("folder rule ring counts are clamped to the supported range", () => {
-  assert.equal(normalizeFolderRuleRings("3"), 3);
-  assert.equal(normalizeFolderRuleRings(-1), 0);
-  assert.equal(normalizeFolderRuleRings(99), 8);
-  assert.equal(normalizeFolderRuleRings("nope"), 0);
+test("folder glow strength is clamped to the supported range", () => {
+  assert.equal(normalizeFolderGlowStrength("3"), 3);
+  assert.equal(normalizeFolderGlowStrength(-1), 1);
+  assert.equal(normalizeFolderGlowStrength(99), 10);
+  assert.equal(normalizeFolderGlowStrength("nope"), 3);
 });
 
 test("combined folder basename rule applies to matching folder paths", () => {
@@ -155,42 +155,71 @@ test("first duplicate folder colour rule wins", () => {
   );
 });
 
-test("folder colour rule visual includes rings from the winning rule", () => {
+test("old saved ring counts do not enable glow", () => {
   const rules = [
     { type: "folder", target: "Biology", color: "#ff0000", inheritToChildren: true, rings: 2 },
     { type: "combined", target: "studying", color: "#00ff00", inheritToChildren: true, rings: 5 }
   ];
 
-  assert.deepEqual(getFolderColorRuleVisual(["Biology/studying"], rules, "fileNode"), {
+  assert.deepEqual(getFolderColorRuleVisual(["Biology"], rules, "folderNode"), {
     color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 2
+    glow: false,
+    glowStrength: 3
   });
 });
 
-test("folder rings inherit to child files even when a closer colour rule has no rings", () => {
-  const rules = [
-    { type: "folder", target: "Biology", color: "#ff0000", inheritToChildren: true, rings: 1 },
-    { type: "folder", target: "Biology/studying", color: "#00ff00", inheritToChildren: true, rings: 0 }
-  ];
+test("top-level glow applies only to exact folder nodes", () => {
+  const rules = [{
+    type: "folder",
+    target: "Biology",
+    color: "#ff0000",
+    inheritToChildren: true,
+    glow: true,
+    glowStrength: 7
+  }];
 
-  assert.deepEqual(getFolderColorRuleVisual(["Biology/studying"], rules, "fileNode"), {
-    color: { a: 1, rgb: 65280 },
+  assert.deepEqual(getFolderColorRuleVisual(["Biology"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 1
+    glow: true,
+    glowStrength: 7
+  });
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    glow: false,
+    glowStrength: 3
+  });
+  assert.deepEqual(getFolderColorRuleVisual(["Biology"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    glow: false,
+    glowStrength: 3
   });
 });
 
-test("nearest positive child ring count overrides inherited parent rings", () => {
-  const rules = [
-    { type: "folder", target: "Biology", color: "#ff0000", inheritToChildren: true, rings: 1 },
-    { type: "folder", target: "Biology/studying", color: "#00ff00", inheritToChildren: true, rings: 3 }
-  ];
+test("combined folder glow applies only to exact combined folder nodes", () => {
+  const rules = [{
+    type: "combined",
+    target: "Studying",
+    color: "#ff0000",
+    inheritToChildren: true,
+    glow: true,
+    glowStrength: 4
+  }];
 
-  assert.deepEqual(getFolderColorRuleVisual(["Biology/studying"], rules, "fileNode"), {
-    color: { a: 1, rgb: 65280 },
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 3
+    glow: true,
+    glowStrength: 4
+  });
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying/Exams"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    glow: false,
+    glowStrength: 3
   });
 });
 
@@ -200,14 +229,22 @@ test("nested normal child rule matches only inside its parent scope", () => {
     target: "Biology",
     color: "#ff0000",
     inheritToChildren: true,
-    rings: 0,
-    children: [{ type: "folder", target: "Studying", colorLinks: true, rings: 2, children: [] }]
+    glow: false,
+    glowStrength: 3,
+    children: [{ type: "folder", target: "Studying", colorLinks: true, glow: true, glowStrength: 5, children: [] }]
   }];
 
   assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "fileNode"), {
     color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 2
+    glow: false,
+    glowStrength: 3
+  });
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    glow: true,
+    glowStrength: 5
   });
   assert.equal(getFolderColorRuleVisual(["Physics/Studying"], rules, "fileNode"), null);
 });
@@ -218,19 +255,28 @@ test("nested combined child rule matches same basename only inside parent scope"
     target: "Biology",
     color: "#ff0000",
     inheritToChildren: true,
-    rings: 0,
-    children: [{ type: "combined", target: "Studying", colorLinks: true, rings: 2, children: [] }]
+    glow: false,
+    glowStrength: 3,
+    children: [{ type: "combined", target: "Studying", colorLinks: true, glow: true, glowStrength: 6, children: [] }]
   }];
 
   assert.deepEqual(getFolderColorRuleVisual(["Biology/Archive/Studying"], rules, "fileNode"), {
     color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 2
+    glow: false,
+    glowStrength: 3
+  });
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Archive/Studying"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    glow: true,
+    glowStrength: 6
   });
   assert.deepEqual(getFolderColorRuleVisual(["Biology/Archive/Reading"], rules, "fileNode"), {
     color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 0
+    glow: false,
+    glowStrength: 3
   });
 });
 
@@ -240,43 +286,55 @@ test("child under combined parent applies under each matching parent basename", 
     target: "Studying",
     color: "#ff0000",
     inheritToChildren: true,
-    rings: 0,
-    children: [{ type: "folder", target: "Schoolwork", colorLinks: true, rings: 2, children: [] }]
+    glow: false,
+    glowStrength: 3,
+    children: [{ type: "folder", target: "Schoolwork", colorLinks: true, glow: true, glowStrength: 6, children: [] }]
   }];
 
-  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying/Schoolwork"], rules, "fileNode"), {
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying/Schoolwork"], rules, "folderNode"), {
     color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 2
+    glow: true,
+    glowStrength: 6
   });
-  assert.deepEqual(getFolderColorRuleVisual(["Physics/Studying/Schoolwork"], rules, "fileNode"), {
+  assert.deepEqual(getFolderColorRuleVisual(["Physics/Studying/Schoolwork"], rules, "folderNode"), {
     color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 2
+    glow: true,
+    glowStrength: 6
   });
 });
 
-test("nested grandchild rule overrides child rings and line colouring", () => {
+test("nested grandchild rule controls its own exact glow and line colouring", () => {
   const rules = [{
     type: "folder",
     target: "Biology",
     color: "#ff0000",
     inheritToChildren: true,
     colorLinks: true,
-    rings: 0,
+    glow: false,
+    glowStrength: 3,
     children: [{
       type: "folder",
       target: "Studying",
       colorLinks: true,
-      rings: 1,
-      children: [{ type: "folder", target: "Exams", colorLinks: false, rings: 3, children: [] }]
+      glow: true,
+      glowStrength: 5,
+      children: [{ type: "folder", target: "Exams", colorLinks: false, glow: true, glowStrength: 8, children: [] }]
     }]
   }];
 
-  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying/Exams"], rules, "fileNode"), {
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying/Exams"], rules, "folderNode"), {
     color: { a: 1, rgb: 16711680 },
     colorLinks: false,
-    rings: 3
+    glow: true,
+    glowStrength: 8
+  });
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying/Exams/Final"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: false,
+    glow: false,
+    glowStrength: 3
   });
 });
 
@@ -287,16 +345,18 @@ test("nested child rule inherits ancestor colour over global child folder colour
       target: "Biology",
       color: "#ff0000",
       inheritToChildren: true,
-      rings: 0,
-      children: [{ type: "folder", target: "Studying", colorLinks: true, rings: 2, children: [] }]
+      glow: false,
+      glowStrength: 3,
+      children: [{ type: "folder", target: "Studying", colorLinks: true, glow: true, glowStrength: 5, children: [] }]
     },
-    { type: "folder", target: "Biology/Studying", color: "#00ff00", inheritToChildren: true, rings: 0 }
+    { type: "folder", target: "Biology/Studying", color: "#00ff00", inheritToChildren: true, glow: false, glowStrength: 3 }
   ];
 
-  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "fileNode"), {
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "folderNode"), {
     color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 2
+    glow: true,
+    glowStrength: 5
   });
 });
 
@@ -306,25 +366,28 @@ test("explicit child rule can match when parent child-note inheritance is disabl
     target: "Biology",
     color: "#ff0000",
     inheritToChildren: false,
-    rings: 0,
-    children: [{ type: "folder", target: "Studying", colorLinks: true, rings: 2, children: [] }]
+    glow: false,
+    glowStrength: 3,
+    children: [{ type: "folder", target: "Studying", colorLinks: true, glow: true, glowStrength: 5, children: [] }]
   }];
 
   assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "fileNode"), {
     color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 2
+    glow: false,
+    glowStrength: 3
   });
   assert.equal(getFolderColorRuleVisual(["Biology/Lab"], rules, "fileNode"), null);
 });
 
-test("folder colour rule visual defaults missing ring counts to zero", () => {
+test("folder colour rule visual defaults missing glow settings to off", () => {
   const rules = [{ type: "folder", target: "Biology", color: "#ff0000" }];
 
   assert.deepEqual(getFolderColorRuleVisual(["Biology"], rules), {
     color: { a: 1, rgb: 16711680 },
     colorLinks: true,
-    rings: 0
+    glow: false,
+    glowStrength: 3
   });
 });
 
@@ -342,14 +405,15 @@ test("folder colour falls back to native graph group colour without rule match",
   assert.deepEqual(getFolderColorForPaths(["Projects/Weekly", "Archive/Weekly"], groups, rules), { a: 1, rgb: 333 });
 });
 
-test("folder visual fallback uses native colour with no rings", () => {
+test("folder visual fallback uses native colour with no glow", () => {
   const groups = [{ query: "path:Projects", color: { a: 1, rgb: 333 } }];
-  const rules = [{ type: "combined", target: "Daily", color: "#ff0000", rings: 4 }];
+  const rules = [{ type: "combined", target: "Daily", color: "#ff0000", glow: true, glowStrength: 4 }];
 
   assert.deepEqual(getFolderVisualForPaths(["Projects/Weekly"], groups, rules), {
     color: { a: 1, rgb: 333 },
     colorLinks: true,
-    rings: 0
+    glow: false,
+    glowStrength: 3
   });
 });
 
@@ -475,7 +539,7 @@ test("graph node plugin colours respect nested line-colouring overrides", () => 
     color: "#ff0000",
     inheritToChildren: true,
     colorLinks: true,
-    children: [{ type: "folder", target: "Studying", colorLinks: false, rings: 0, children: [] }]
+    children: [{ type: "folder", target: "Studying", colorLinks: false, glow: false, glowStrength: 3, children: [] }]
   }];
   const nodes = {
     "Biology/Studying/spoken exam.md": { links: { "Biology/Lab/report.md": true } },
