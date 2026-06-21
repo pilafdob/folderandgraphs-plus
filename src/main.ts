@@ -99,6 +99,7 @@ type PatchableGraphLink = {
   sourceY?: unknown;
   targetX?: unknown;
   targetY?: unknown;
+  renderer?: unknown;
   __folderAndGraphsPlusOriginalLinkRenderMethods?: Partial<Record<GraphRenderMethodName, GraphLinkRenderMethod>>;
   render?: GraphLinkRenderMethod;
   draw?: GraphLinkRenderMethod;
@@ -159,6 +160,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private originalGetFillColor: (() => GraphColor) | null = null;
   private patchedGetFillColor: (() => GraphColor) | null = null;
   private patchedLinkPrototypes = new Set<PatchableGraphLink>();
+  private rendererByLinkPrototype = new WeakMap<PatchableGraphLink, GraphRenderer>();
   private colorGroups: GraphColorGroup[] = [];
   private combinedFolderPathsByNodeId = new Map<string, string[]>();
   private nodePluginColorsById = new Map<string, GraphColor>();
@@ -295,7 +297,12 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private patchGraphLinkRendering(renderer: GraphRenderer): void {
     for (const link of this.getRendererLinks(renderer)) {
       const prototype = Object.getPrototypeOf(link) as PatchableGraphLink | null;
-      if (!prototype || this.patchedLinkPrototypes.has(prototype)) {
+      if (!prototype) {
+        continue;
+      }
+
+      this.rendererByLinkPrototype.set(prototype, renderer);
+      if (this.patchedLinkPrototypes.has(prototype)) {
         continue;
       }
 
@@ -497,8 +504,14 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     sourceColor: GraphColor,
     targetColor: GraphColor
   ): boolean {
-    const sourcePoint = this.getGraphEndpointPoint(endpoints.source) ?? this.getLinkEndpointPoint(link, "source");
-    const targetPoint = this.getGraphEndpointPoint(endpoints.target) ?? this.getLinkEndpointPoint(link, "target");
+    const sourcePoint =
+      this.getGraphEndpointPoint(endpoints.source) ??
+      this.getLinkEndpointPoint(link, "source") ??
+      this.getRendererNodePoint(link, endpoints.sourceId);
+    const targetPoint =
+      this.getGraphEndpointPoint(endpoints.target) ??
+      this.getLinkEndpointPoint(link, "target") ??
+      this.getRendererNodePoint(link, endpoints.targetId);
     if (!sourcePoint || !targetPoint) {
       return false;
     }
@@ -547,6 +560,62 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     const y = endpoint === "source" ? link.y1 ?? link.sourceY : link.y2 ?? link.targetY;
 
     return typeof x === "number" && typeof y === "number" ? { x, y } : null;
+  }
+
+  private getRendererNodePoint(link: PatchableGraphLink, nodeId: string): GraphPoint | null {
+    const renderer = this.getLinkRenderer(link);
+    const node = this.getRendererNode(renderer, nodeId);
+    return this.getGraphEndpointPoint(node);
+  }
+
+  private getLinkRenderer(link: PatchableGraphLink): GraphRenderer | null {
+    if (this.isGraphRenderer(link.renderer)) {
+      return link.renderer;
+    }
+
+    const prototype = Object.getPrototypeOf(link) as PatchableGraphLink | null;
+    return prototype ? this.rendererByLinkPrototype.get(prototype) ?? null : null;
+  }
+
+  private isGraphRenderer(value: unknown): value is GraphRenderer {
+    return typeof value === "object" && value !== null && (
+      Array.isArray((value as GraphRenderer).nodes) ||
+      Boolean((value as GraphRenderer).renderer) ||
+      Boolean((value as GraphRenderer).graph)
+    );
+  }
+
+  private getRendererNode(renderer: GraphRenderer | null, nodeId: string): unknown {
+    if (!renderer) {
+      return null;
+    }
+
+    const rendererWithLookup = renderer as GraphRenderer & {
+      nodeLookup?: Record<string, unknown> | Map<string, unknown>;
+      renderer?: GraphRenderer & { nodeLookup?: Record<string, unknown> | Map<string, unknown> };
+      graph?: GraphRenderer & { nodeLookup?: Record<string, unknown> | Map<string, unknown> };
+    };
+
+    return (
+      this.getNodeFromLookup(rendererWithLookup.nodeLookup, nodeId) ??
+      this.getNodeFromLookup(rendererWithLookup.renderer?.nodeLookup, nodeId) ??
+      this.getNodeFromLookup(rendererWithLookup.graph?.nodeLookup, nodeId) ??
+      this.getNodeFromArray(renderer.nodes, nodeId) ??
+      this.getNodeFromArray(rendererWithLookup.renderer?.nodes, nodeId) ??
+      this.getNodeFromArray(rendererWithLookup.graph?.nodes, nodeId)
+    );
+  }
+
+  private getNodeFromLookup(lookup: Record<string, unknown> | Map<string, unknown> | undefined, nodeId: string): unknown {
+    if (lookup instanceof Map) {
+      return lookup.get(nodeId) ?? null;
+    }
+
+    return lookup?.[nodeId] ?? null;
+  }
+
+  private getNodeFromArray(nodes: unknown[] | undefined, nodeId: string): unknown {
+    return nodes?.find((node) => this.getGraphEndpointId(node) === nodeId) ?? null;
   }
 
   private getLineWidth(target: PixiLineLike): number {
