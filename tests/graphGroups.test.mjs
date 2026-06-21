@@ -7,11 +7,14 @@ import {
   getDeepestFolderColorForPaths,
   getFolderColorForPaths,
   getFolderColorRuleColor,
+  getFolderColorRuleVisual,
   getFolderColorStackForPaths,
+  getFolderVisualForPaths,
   getGraphLinkColorDecision,
   getGraphNodePluginColors,
   getFolderGroupColor,
   getFolderGroupColorForPaths,
+  normalizeFolderRuleRings,
   parseHexGraphColor
 } from "../testable/graphGroups.mjs";
 
@@ -77,6 +80,13 @@ test("invalid hex colours are ignored", () => {
   assert.equal(parseHexGraphColor("5c8af5"), null);
   assert.equal(parseHexGraphColor("#12345"), null);
   assert.equal(parseHexGraphColor("#12345g"), null);
+});
+
+test("folder rule ring counts are clamped to the supported range", () => {
+  assert.equal(normalizeFolderRuleRings("3"), 3);
+  assert.equal(normalizeFolderRuleRings(-1), 0);
+  assert.equal(normalizeFolderRuleRings(99), 8);
+  assert.equal(normalizeFolderRuleRings("nope"), 0);
 });
 
 test("combined folder basename rule applies to matching folder paths", () => {
@@ -145,6 +155,27 @@ test("first duplicate folder colour rule wins", () => {
   );
 });
 
+test("folder colour rule visual includes rings from the winning rule", () => {
+  const rules = [
+    { type: "folder", target: "Biology", color: "#ff0000", inheritToChildren: true, rings: 2 },
+    { type: "combined", target: "studying", color: "#00ff00", inheritToChildren: true, rings: 5 }
+  ];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/studying"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    rings: 2
+  });
+});
+
+test("folder colour rule visual defaults missing ring counts to zero", () => {
+  const rules = [{ type: "folder", target: "Biology", color: "#ff0000" }];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology"], rules), {
+    color: { a: 1, rgb: 16711680 },
+    rings: 0
+  });
+});
+
 test("folder colour rules override native graph group colour", () => {
   const groups = [{ query: "path:Projects", color: { a: 1, rgb: 333 } }];
   const rules = [{ type: "folder", target: "Projects", color: "#ff0000" }];
@@ -157,6 +188,16 @@ test("folder colour falls back to native graph group colour without rule match",
   const rules = [{ type: "combined", target: "Daily", color: "#ff0000" }];
 
   assert.deepEqual(getFolderColorForPaths(["Projects/Weekly", "Archive/Weekly"], groups, rules), { a: 1, rgb: 333 });
+});
+
+test("folder visual fallback uses native colour with no rings", () => {
+  const groups = [{ query: "path:Projects", color: { a: 1, rgb: 333 } }];
+  const rules = [{ type: "combined", target: "Daily", color: "#ff0000", rings: 4 }];
+
+  assert.deepEqual(getFolderVisualForPaths(["Projects/Weekly"], groups, rules), {
+    color: { a: 1, rgb: 333 },
+    rings: 0
+  });
 });
 
 test("folder colour stack returns parent and child colours in hierarchy order", () => {

@@ -69,12 +69,38 @@ export function parseHexGraphColor(value) {
   };
 }
 
+export const MAX_FOLDER_RULE_RINGS = 8;
+
+export function normalizeFolderRuleRings(value) {
+  const numericValue = typeof value === "number"
+    ? value
+    : typeof value === "string"
+      ? Number.parseInt(value, 10)
+      : 0;
+
+  if (!Number.isFinite(numericValue)) {
+    return 0;
+  }
+
+  return Math.min(MAX_FOLDER_RULE_RINGS, Math.max(0, Math.round(numericValue)));
+}
+
 export function folderBasenameFromPath(folderPath) {
   const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
   return parts[parts.length - 1] ?? "";
 }
 
 export function getFolderColorRuleColors(folderPaths, rules, mode = "folderNode") {
+  return getSortedFolderColorRuleMatches(folderPaths, rules, mode).map((match) => match.color);
+}
+
+export function getFolderColorRuleVisual(folderPaths, rules, mode = "folderNode") {
+  const matches = getSortedFolderColorRuleMatches(folderPaths, rules, mode);
+  const match = matches[matches.length - 1];
+  return match ? { color: match.color, rings: match.rings } : null;
+}
+
+function getSortedFolderColorRuleMatches(folderPaths, rules, mode) {
   const matches = [];
   const seenTargets = new Set();
 
@@ -95,13 +121,19 @@ export function getFolderColorRuleColors(folderPaths, rules, mode = "folderNode"
       return;
     }
 
-    matches.push({ color, depth: match.depth, priority: match.priority, ruleIndex, targetKey });
+    matches.push({
+      color,
+      depth: match.depth,
+      priority: match.priority,
+      rings: normalizeFolderRuleRings(rule.rings),
+      ruleIndex,
+      targetKey
+    });
     seenTargets.add(targetKey);
   });
 
   return matches
-    .sort((a, b) => a.priority - b.priority || a.depth - b.depth || a.ruleIndex - b.ruleIndex)
-    .map((match) => match.color);
+    .sort((a, b) => a.priority - b.priority || a.depth - b.depth || a.ruleIndex - b.ruleIndex);
 }
 
 export function getFolderColorRuleColor(folderPaths, rules, mode = "folderNode") {
@@ -205,6 +237,16 @@ export function getGraphLinkColorDecision(sourceColor, targetColor) {
 export function getFolderColorForPaths(folderPaths, colorGroups, folderColorRules, mode = "folderNode") {
   return getFolderColorRuleColor(folderPaths, folderColorRules, mode) ??
     getFolderGroupColorForPaths(folderPaths, colorGroups);
+}
+
+export function getFolderVisualForPaths(folderPaths, colorGroups, folderColorRules, mode = "folderNode") {
+  const ruleVisual = getFolderColorRuleVisual(folderPaths, folderColorRules, mode);
+  if (ruleVisual) {
+    return ruleVisual;
+  }
+
+  const fallbackColor = getFolderGroupColorForPaths(folderPaths, colorGroups);
+  return fallbackColor ? { color: fallbackColor, rings: 0 } : null;
 }
 
 export function getFolderGroupColor(folderPath, colorGroups) {

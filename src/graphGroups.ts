@@ -16,6 +16,7 @@ export type FolderColorRule = {
   color: string;
   inheritToChildren: boolean;
   colorLinks: boolean;
+  rings: number;
 };
 
 export type GraphLinkColorNode = {
@@ -47,9 +48,17 @@ type FolderColorRuleMatch = {
   color: GraphColor;
   depth: number;
   priority: number;
+  rings: number;
   ruleIndex: number;
   targetKey: string;
 };
+
+export type FolderColorVisual = {
+  color: GraphColor;
+  rings: number;
+};
+
+export const MAX_FOLDER_RULE_RINGS = 8;
 
 export function normalizeVaultPath(path: unknown): string {
   if (typeof path !== "string") return "";
@@ -126,6 +135,20 @@ export function parseHexGraphColor(value: unknown): GraphColor | null {
   };
 }
 
+export function normalizeFolderRuleRings(value: unknown): number {
+  const numericValue = typeof value === "number"
+    ? value
+    : typeof value === "string"
+      ? Number.parseInt(value, 10)
+      : 0;
+
+  if (!Number.isFinite(numericValue)) {
+    return 0;
+  }
+
+  return Math.min(MAX_FOLDER_RULE_RINGS, Math.max(0, Math.round(numericValue)));
+}
+
 export function folderBasenameFromPath(folderPath: unknown): string {
   const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
   return parts[parts.length - 1] ?? "";
@@ -136,6 +159,24 @@ export function getFolderColorRuleColors(
   rules: readonly FolderColorRule[],
   mode: FolderColorMatchMode = "folderNode"
 ): GraphColor[] {
+  return getSortedFolderColorRuleMatches(folderPaths, rules, mode).map((match) => match.color);
+}
+
+export function getFolderColorRuleVisual(
+  folderPaths: readonly string[],
+  rules: readonly FolderColorRule[],
+  mode: FolderColorMatchMode = "folderNode"
+): FolderColorVisual | null {
+  const matches = getSortedFolderColorRuleMatches(folderPaths, rules, mode);
+  const match = matches[matches.length - 1];
+  return match ? { color: match.color, rings: match.rings } : null;
+}
+
+function getSortedFolderColorRuleMatches(
+  folderPaths: readonly string[],
+  rules: readonly FolderColorRule[],
+  mode: FolderColorMatchMode
+): FolderColorRuleMatch[] {
   const matches: FolderColorRuleMatch[] = [];
   const seenTargets = new Set<string>();
 
@@ -156,13 +197,19 @@ export function getFolderColorRuleColors(
       return;
     }
 
-    matches.push({ color, depth: match.depth, priority: match.priority, ruleIndex, targetKey });
+    matches.push({
+      color,
+      depth: match.depth,
+      priority: match.priority,
+      rings: normalizeFolderRuleRings(rule.rings),
+      ruleIndex,
+      targetKey
+    });
     seenTargets.add(targetKey);
   });
 
   return matches
-    .sort((a, b) => a.priority - b.priority || a.depth - b.depth || a.ruleIndex - b.ruleIndex)
-    .map((match) => match.color);
+    .sort((a, b) => a.priority - b.priority || a.depth - b.depth || a.ruleIndex - b.ruleIndex);
 }
 
 export function getFolderColorRuleColor(
@@ -307,6 +354,21 @@ export function getFolderColorForPaths(
     getFolderColorRuleColor(folderPaths, folderColorRules, mode) ??
     getFolderGroupColorForPaths(folderPaths, colorGroups)
   );
+}
+
+export function getFolderVisualForPaths(
+  folderPaths: readonly string[],
+  colorGroups: readonly GraphColorGroup[],
+  folderColorRules: readonly FolderColorRule[],
+  mode: FolderColorMatchMode = "folderNode"
+): FolderColorVisual | null {
+  const ruleVisual = getFolderColorRuleVisual(folderPaths, folderColorRules, mode);
+  if (ruleVisual) {
+    return ruleVisual;
+  }
+
+  const fallbackColor = getFolderGroupColorForPaths(folderPaths, colorGroups);
+  return fallbackColor ? { color: fallbackColor, rings: 0 } : null;
 }
 
 export function getFolderGroupColor(

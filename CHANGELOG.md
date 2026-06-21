@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.3
+
+- Add per-folder floating node rings with a selectable ring count in folder colour settings.
+- Preserve solid node colouring while rendering rings as outlines around matching graph nodes.
+
 ## 1.0.2
 
 - Fix split line colouring for bidirectional graph links by resolving endpoint positions from graph nodes when needed.

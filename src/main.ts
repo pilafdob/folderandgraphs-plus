@@ -13,10 +13,12 @@ import {
   type FolderColorRuleType,
   type GraphColor,
   type GraphColorGroup,
+  MAX_FOLDER_RULE_RINGS,
   folderPathFromNodeId,
-  getFolderColorForPaths,
+  getFolderVisualForPaths,
   getGraphLinkColorDecision,
   getGraphNodePluginColors,
+  normalizeFolderRuleRings,
   parseHexGraphColor
 } from "./graphGroups";
 import Folder2GraphPlugin from "./vendor/folders2graph/main";
@@ -69,11 +71,22 @@ type GraphLeaf = WorkspaceLeaf & {
 type PatchableGraphNode = {
   id?: unknown;
   type?: unknown;
+  circle?: unknown;
+  graphics?: unknown;
+  radius?: unknown;
+  r?: unknown;
+  alpha?: unknown;
   __folderAndGraphsPlusOriginalGetFillColor?: () => GraphColor;
+  __folderAndGraphsPlusOriginalNodeRenderMethods?: Partial<Record<GraphRenderMethodName, GraphNodeRenderMethod>>;
   getFillColor?: () => GraphColor;
+  render?: GraphNodeRenderMethod;
+  draw?: GraphNodeRenderMethod;
+  updateGraphics?: GraphNodeRenderMethod;
 };
 
 type GraphRenderMethodName = "render" | "draw" | "updateGraphics";
+
+type GraphNodeRenderMethod = (this: PatchableGraphNode, ...args: unknown[]) => unknown;
 
 type PatchableGraphLink = {
   source?: unknown;
@@ -117,6 +130,17 @@ type PixiLineLike = {
   moveTo?: (x: number, y: number) => void;
   lineTo?: (x: number, y: number) => void;
   lineStyle?: (width?: number, color?: number, alpha?: number) => void;
+};
+
+type PixiCircleLike = PixiLineLike & {
+  x?: number;
+  y?: number;
+  radius?: number;
+  r?: number;
+  drawCircle?: (x: number, y: number, radius: number) => void;
+  arc?: (x: number, y: number, radius: number, startAngle: number, endAngle: number) => void;
+  closePath?: () => void;
+  getLocalBounds?: () => { x: number; y: number; width: number; height: number };
 };
 
 type GraphPoint = {
@@ -201,6 +225,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       delete this.patchedPrototype.__folderAndGraphsPlusOriginalGetFillColor;
     }
 
+    this.restoreGraphNodeRenderMethods();
     this.restoreGraphLinkRenderMethods();
     this.patchedPrototype = null;
     this.originalGetFillColor = null;
@@ -249,12 +274,14 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     }
 
     if (this.patchedPrototype === prototype && prototype.getFillColor === this.patchedGetFillColor) {
+      this.patchGraphNodeRenderMethods(prototype);
       return;
     }
 
     if (this.patchedPrototype && this.originalGetFillColor && this.patchedPrototype !== prototype) {
       this.patchedPrototype.getFillColor = this.originalGetFillColor;
       delete this.patchedPrototype.__folderAndGraphsPlusOriginalGetFillColor;
+      this.restoreGraphNodeRenderMethods();
     }
 
     const original = prototype.getFillColor;
@@ -274,20 +301,148 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
     this.patchedGetFillColor = patchedGetFillColor;
     prototype.getFillColor = patchedGetFillColor;
+    this.patchGraphNodeRenderMethods(prototype);
   }
 
   private getColorForGraphNode(node: PatchableGraphNode): GraphColor | null {
+    return this.getVisualForGraphNode(node)?.color ?? null;
+  }
+
+  private getVisualForGraphNode(node: PatchableGraphNode): { color: GraphColor; rings: number } | null {
     const folderPaths = this.getFolderPathsForGraphNode(node);
     if (folderPaths.length === 0) {
       return null;
     }
 
-    return getFolderColorForPaths(
+    return getFolderVisualForPaths(
       folderPaths,
       this.colorGroups,
       this.settings.folderColorRules,
       this.isFolderGraphNode(node) ? "folderNode" : "fileNode"
     );
+  }
+
+  private patchGraphNodeRenderMethods(prototype: PatchableGraphNode): void {
+    const originalMethods = prototype.__folderAndGraphsPlusOriginalNodeRenderMethods ?? {};
+    if (Object.keys(originalMethods).length > 0) {
+      return;
+    }
+
+    const drawNodeRings = this.drawNodeRings.bind(this);
+    for (const methodName of ["render", "draw", "updateGraphics"] as const) {
+      const original = prototype[methodName];
+      if (typeof original !== "function") {
+        continue;
+      }
+
+      originalMethods[methodName] = original;
+      prototype[methodName] = function folderAndGraphsPlusNodeRenderPatch(
+        this: PatchableGraphNode,
+        ...args: unknown[]
+      ): unknown {
+        const result = original.apply(this, args);
+        drawNodeRings(this);
+        return result;
+      };
+      break;
+    }
+
+    if (Object.keys(originalMethods).length > 0) {
+      prototype.__folderAndGraphsPlusOriginalNodeRenderMethods = originalMethods;
+    }
+  }
+
+  private restoreGraphNodeRenderMethods(): void {
+    const prototype = this.patchedPrototype;
+    const originalMethods = prototype?.__folderAndGraphsPlusOriginalNodeRenderMethods;
+    if (!prototype || !originalMethods) {
+      return;
+    }
+
+    for (const [methodName, original] of Object.entries(originalMethods) as [
+      GraphRenderMethodName,
+      GraphNodeRenderMethod
+    ][]) {
+      prototype[methodName] = original;
+    }
+
+    delete prototype.__folderAndGraphsPlusOriginalNodeRenderMethods;
+  }
+
+  private drawNodeRings(node: PatchableGraphNode): void {
+    const visual = this.getVisualForGraphNode(node);
+    const rings = normalizeFolderRuleRings(visual?.rings);
+    if (!visual || rings < 1) {
+      return;
+    }
+
+    const target = this.getNodeRingTargets(node).find((candidate) => (
+      typeof candidate.lineStyle === "function" &&
+      (typeof candidate.drawCircle === "function" || typeof candidate.arc === "function")
+    ));
+    if (!target) {
+      return;
+    }
+
+    const geometry = this.getNodeCircleGeometry(node, target);
+    if (!geometry) {
+      return;
+    }
+
+    const alpha = visual.color.a ?? (typeof target.alpha === "number" ? target.alpha : 0.9);
+    const lineWidth = 1.5;
+    const gap = 3;
+
+    for (let index = 1; index <= rings; index += 1) {
+      const radius = geometry.radius + (gap * index);
+      target.lineStyle?.(lineWidth, visual.color.rgb, alpha);
+      if (typeof target.drawCircle === "function") {
+        target.drawCircle(geometry.x, geometry.y, radius);
+      } else {
+        target.moveTo?.(geometry.x + radius, geometry.y);
+        target.arc?.(geometry.x, geometry.y, radius, 0, Math.PI * 2);
+        target.closePath?.();
+      }
+    }
+  }
+
+  private getNodeRingTargets(node: PatchableGraphNode): PixiCircleLike[] {
+    return [node.circle, node.graphics, node]
+      .filter((target): target is PixiCircleLike => typeof target === "object" && target !== null);
+  }
+
+  private getNodeCircleGeometry(node: PatchableGraphNode, target: PixiCircleLike): { x: number; y: number; radius: number } | null {
+    const explicitRadius = this.asNumber(node.radius) ?? this.asNumber(node.r) ?? this.asNumber(target.radius) ?? this.asNumber(target.r);
+    if (explicitRadius && explicitRadius > 0) {
+      return {
+        x: this.asNumber(target.x) ?? 0,
+        y: this.asNumber(target.y) ?? 0,
+        radius: explicitRadius
+      };
+    }
+
+    const bounds = target.getLocalBounds?.();
+    if (
+      bounds &&
+      Number.isFinite(bounds.x) &&
+      Number.isFinite(bounds.y) &&
+      Number.isFinite(bounds.width) &&
+      Number.isFinite(bounds.height) &&
+      bounds.width > 0 &&
+      bounds.height > 0
+    ) {
+      return {
+        x: bounds.x + (bounds.width / 2),
+        y: bounds.y + (bounds.height / 2),
+        radius: Math.min(bounds.width, bounds.height) / 2
+      };
+    }
+
+    return null;
+  }
+
+  private asNumber(value: unknown): number | null {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
   }
 
   private isFolderGraphNode(node: PatchableGraphNode): boolean {
@@ -963,7 +1118,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         target: raw.target,
         color: parseHexGraphColor(raw.color) ? raw.color : DEFAULT_FOLDER_RULE_COLOR,
         inheritToChildren: typeof raw.inheritToChildren === "boolean" ? raw.inheritToChildren : true,
-        colorLinks: typeof raw.colorLinks === "boolean" ? raw.colorLinks : true
+        colorLinks: typeof raw.colorLinks === "boolean" ? raw.colorLinks : true,
+        rings: normalizeFolderRuleRings(raw.rings)
       });
     }
 
@@ -991,7 +1147,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         target: raw.folderName,
         color: parseHexGraphColor(raw.color) ? raw.color : DEFAULT_FOLDER_RULE_COLOR,
         inheritToChildren: true,
-        colorLinks: true
+        colorLinks: true,
+        rings: 0
       });
     }
 
@@ -1242,6 +1399,24 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
           });
       });
 
+      this.addToggleTag(setting, "Rings");
+      setting.addText((text) => {
+        text.inputEl.type = "number";
+        text.inputEl.min = "0";
+        text.inputEl.max = String(MAX_FOLDER_RULE_RINGS);
+        text.inputEl.step = "1";
+        text
+          .setPlaceholder("0")
+          .setValue(String(normalizeFolderRuleRings(rule.rings)))
+          .onChange(async (value) => {
+            this.plugin.settings.folderColorRules[index] = {
+              ...this.plugin.settings.folderColorRules[index],
+              rings: normalizeFolderRuleRings(value)
+            };
+            await this.saveAndRefresh();
+          });
+      });
+
       setting.addButton((button) => {
         button
           .setIcon("trash")
@@ -1266,7 +1441,8 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
               target: "",
               color: DEFAULT_FOLDER_RULE_COLOR,
               inheritToChildren: true,
-              colorLinks: true
+              colorLinks: true,
+              rings: 0
             });
             await this.saveAndRefresh();
             this.renderSettings();
