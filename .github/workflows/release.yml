@@ -35,12 +35,18 @@ jobs:
           const fs = require("fs");
           const version = require("./manifest.json").version;
           const changelog = fs.readFileSync("CHANGELOG.md", "utf8");
-          const pattern = new RegExp(`^## ${version}\\n([\\s\\S]*?)(?=\\n## |\\n?$)`, "m");
-          const match = changelog.match(pattern);
-          if (!match) {
+          const heading = `## ${version}`;
+          const start = changelog.indexOf(`${heading}\n`);
+          if (start === -1) {
             throw new Error(`CHANGELOG.md is missing release notes for ${version}`);
           }
-          fs.writeFileSync(".release-notes.md", match[1].trim() + "\n");
+          const bodyStart = start + heading.length + 1;
+          const nextHeading = changelog.indexOf("\n## ", bodyStart);
+          const body = changelog.slice(bodyStart, nextHeading === -1 ? undefined : nextHeading).trim();
+          if (!body) {
+            throw new Error(`CHANGELOG.md release notes for ${version} are empty`);
+          }
+          fs.writeFileSync(".release-notes.md", body + "\n");
           NODE
 
       - name: Attest release assets
