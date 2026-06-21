@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
 
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +28,27 @@ jobs:
           npm test
           npm run build
           node -e "const fs=require('fs'); const pkg=require('./package.json'); const manifest=require('./manifest.json'); if (pkg.version !== manifest.version) throw new Error('package.json and manifest.json versions differ'); for (const file of ['main.js', 'manifest.json']) { if (!fs.existsSync(file)) throw new Error(`${file} is missing`); }"
+
+      - name: Prepare release notes
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const version = require("./manifest.json").version;
+          const changelog = fs.readFileSync("CHANGELOG.md", "utf8");
+          const pattern = new RegExp(`^## ${version}\\n([\\s\\S]*?)(?=\\n## |\\n?$)`, "m");
+          const match = changelog.match(pattern);
+          if (!match) {
+            throw new Error(`CHANGELOG.md is missing release notes for ${version}`);
+          }
+          fs.writeFileSync(".release-notes.md", match[1].trim() + "\n");
+          NODE
+
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            manifest.json
 
       - name: Check for optional styles
         id: styles
@@ -46,4 +69,4 @@ jobs:
           if [ "${{ steps.styles.outputs.exists }}" = "true" ]; then
             files+=(styles.css)
           fi
-          gh release create "$tag" --title "$tag" --draft "${files[@]}"
+          gh release create "$tag" --title "$tag" --notes-file .release-notes.md --draft "${files[@]}"

@@ -5,10 +5,7 @@ import {
   folderPathFromNodeId,
   getFolderGroupColorForPaths
 } from "./graphGroups";
-
-const Folder2GraphBundle = require("./vendor/folders2graph/main.js") as {
-  default?: new (app: FolderAndGraphsPlusPlugin["app"], manifest: FolderAndGraphsPlusPlugin["manifest"]) => Plugin;
-};
+import Folder2GraphPlugin from "./vendor/folders2graph/main";
 
 const FOLDER2GRAPH_NODE_TYPE = "f2g_node";
 
@@ -64,6 +61,8 @@ type GraphData = {
   nodes?: Record<string, GraphNodeData>;
   [key: string]: unknown;
 };
+
+type Folder2GraphSettings = Record<string, unknown>;
 
 export default class FolderAndGraphsPlusPlugin extends Plugin {
   settings: FolderAndGraphsPlusSettings = { ...DEFAULT_SETTINGS };
@@ -169,11 +168,11 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     this.originalGetFillColor = original;
     prototype.__folderAndGraphsPlusOriginalGetFillColor = original;
 
-    const plugin = this;
+    const getColorForFolderPath = this.getColorForFolderPath.bind(this);
     const patchedGetFillColor = function patchedGetFillColor(this: PatchableGraphNode): GraphColor {
       if (this.type === FOLDER2GRAPH_NODE_TYPE) {
         const folderPath = folderPathFromNodeId(this.id);
-        const color = plugin.getColorForFolderPath(folderPath);
+        const color = getColorForFolderPath(folderPath);
         if (color) {
           return color;
         }
@@ -196,7 +195,6 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       return;
     }
 
-    const Folder2GraphPlugin = Folder2GraphBundle.default;
     if (!Folder2GraphPlugin) {
       console.error("folderandgraphs-plus: bundled Folder2Graph module did not export a plugin.");
       return;
@@ -219,8 +217,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
     bridge.loadData = async () => this.settings.folder2graph ?? {};
     bridge.saveData = async (data: unknown) => {
-      this.settings.folder2graph =
-        typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+      this.settings.folder2graph = this.parseFolder2GraphSettings(data);
       await this.saveSettings();
     };
 
@@ -266,13 +263,15 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       return;
     }
 
-    const plugin = this;
-    const wrapper = function wrapper(this: GraphRenderer, data: GraphData): unknown {
-      const nextData = plugin.settings.combineSameNameFolders
-        ? plugin.mergeSameNameFolderNodes(data)
-        : plugin.rememberSeparateFolderPaths(data);
+    const shouldCombineSameNameFolders = () => this.settings.combineSameNameFolders;
+    const mergeSameNameFolderNodes = this.mergeSameNameFolderNodes.bind(this);
+    const rememberSeparateFolderPaths = this.rememberSeparateFolderPaths.bind(this);
+    const wrapper = (data: GraphData): unknown => {
+      const nextData = shouldCombineSameNameFolders()
+        ? mergeSameNameFolderNodes(data)
+        : rememberSeparateFolderPaths(data);
 
-      return original.call(this, nextData);
+      return original.call(renderer, nextData);
     };
 
     renderer.__folderAndGraphsPlusDataPatch = { key, original, wrapper };
@@ -427,7 +426,26 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   }
 
   private async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = this.parseSettings(await this.loadData());
+  }
+
+  private parseSettings(value: unknown): FolderAndGraphsPlusSettings {
+    if (typeof value !== "object" || value === null) {
+      return { ...DEFAULT_SETTINGS };
+    }
+
+    const raw = value as Record<string, unknown>;
+    return {
+      combineSameNameFolders:
+        typeof raw.combineSameNameFolders === "boolean"
+          ? raw.combineSameNameFolders
+          : DEFAULT_SETTINGS.combineSameNameFolders,
+      folder2graph: this.parseFolder2GraphSettings(raw.folder2graph)
+    };
+  }
+
+  private parseFolder2GraphSettings(value: unknown): Folder2GraphSettings {
+    return typeof value === "object" && value !== null ? { ...(value as Folder2GraphSettings) } : {};
   }
 
   refreshGraphsAfterSettingsChange(): void {
@@ -475,7 +493,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   }
 
   private async readColorGroupsFromGraphJson(): Promise<GraphColorGroup[]> {
-    const configDir = (this.app.vault as { configDir?: string }).configDir || ".obsidian";
+    const configDir = this.app.vault.configDir;
     const graphConfigPath = `${configDir}/graph.json`;
 
     try {

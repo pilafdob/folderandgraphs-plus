@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+- Address Obsidian community review warnings by replacing the source `require()` import with a typed ES import.
+- Remove local `this` aliasing and tighten loaded settings validation.
+- Read the active Obsidian configuration folder from `Vault#configDir`.
+- Remove bundled Folder2Graph browser storage access.
+- Add GitHub release notes and artifact attestation generation for release assets.
+
 ## 0.3.0
 
 - Bundle Folders to Graph 1.2.0 so Folder and Graphs Plus can create folder nodes without requiring a separate plugin install.
