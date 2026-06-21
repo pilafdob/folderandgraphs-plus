@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+
+- Replace `Vault#getFolderByPath` with a minAppVersion-compatible folder lookup.
+- Avoid internal calls to the deprecated settings tab `display()` method.
+
 ## 1.0.0
 
 - Address Obsidian community review warnings by replacing the source `require()` import with a typed ES import.

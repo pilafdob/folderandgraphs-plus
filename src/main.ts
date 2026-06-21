@@ -577,9 +577,9 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       return [this.getParentFolderPath(file)];
     }
 
-    const folder = this.app.vault.getFolderByPath(nodePath);
+    const folder = this.app.vault.getAbstractFileByPath(nodePath);
     if (folder) {
-      return [folder.isRoot() ? "" : folder.path];
+      return folder instanceof TFolder ? [folder.isRoot() ? "" : folder.path] : [];
     }
 
     const slashIndex = nodePath.lastIndexOf("/");
@@ -1081,6 +1081,10 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
   }
 
   display(): void {
+    this.renderSettings();
+  }
+
+  private renderSettings(): void {
     const { containerEl } = this;
     containerEl.empty();
 
@@ -1094,7 +1098,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
             this.plugin.settings.combineSameNameFolders = value;
             await this.plugin.saveSettings();
             this.plugin.refreshGraphsAfterSettingsChange();
-            this.display();
+            this.renderSettings();
           });
       });
 
@@ -1125,7 +1129,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
             target: suggestion.target
           };
           await this.saveAndRefresh();
-          this.display();
+          this.renderSettings();
         });
       });
 
@@ -1176,7 +1180,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
           .onClick(async () => {
             this.plugin.settings.folderColorRules.splice(index, 1);
             await this.saveAndRefresh();
-            this.display();
+            this.renderSettings();
           });
       });
     }
@@ -1196,7 +1200,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
               colorLinks: true
             });
             await this.saveAndRefresh();
-            this.display();
+            this.renderSettings();
           });
       });
   }
