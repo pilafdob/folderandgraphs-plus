@@ -9,9 +9,8 @@ Nothing in this checklist has been published yet.
 
 ## Current blockers
 
-- Initialize a Git repository or move these files into the intended GitHub repository.
 - Manually test inside Obsidian on macOS, then decide whether to test Windows, Linux, Android, and iOS before submission.
-- Create the GitHub repository and confirm the final repo URL. The prepared submission assumes `pilafdob/folderandgraphs-plus`.
+- Submit through `https://community.obsidian.md` after signing in with an Obsidian account and linking GitHub account `pilafdob`.
 
 ## Local verification before first release
 
@@ -58,26 +57,12 @@ Review the draft release, then publish it when ready.
 
 ## Obsidian community plugin submission
 
-After the GitHub release is public:
+After the GitHub release is public, use `OBSIDIAN_SUBMISSION.md`.
 
-1. Fork `obsidianmd/obsidian-releases`.
-2. Add the entry from `OBSIDIAN_SUBMISSION.md` to `community-plugins.json`:
+Do not use the old pull request flow for `obsidianmd/obsidian-releases`; pull requests are disabled there.
 
-```json
-{
-  "id": "folderandgraphs-plus",
-  "name": "Folder and Graphs Plus",
-  "author": "pilafdob",
-  "description": "Colours Folder2Graph folder nodes with matching native Graph View group colours.",
-  "repo": "pilafdob/folderandgraphs-plus"
-}
+Submit this repository URL in the web form:
+
+```text
+https://github.com/pilafdob/folderandgraphs-plus
 ```
-
-3. Open a pull request using the community plugin template.
-4. Confirm the release checklist in the PR:
-   - Release assets include `main.js` and `manifest.json`.
-   - Release title matches the exact manifest version.
-   - README explains purpose and usage.
-   - Plugin id matches `community-plugins.json`.
-   - License is present.
-   - Any borrowed code is attributed and license-compatible.

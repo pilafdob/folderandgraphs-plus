@@ -1,58 +1,62 @@
 # Obsidian community plugin submission
 
-Use this after the GitHub repository exists and the `0.3.0` release is public.
+Obsidian no longer accepts community plugin submissions through pull requests to `obsidianmd/obsidian-releases`.
+Submit the plugin through the Obsidian Community directory instead.
 
-## `community-plugins.json` entry
+## Submission URL
+
+Go to:
+
+```text
+https://community.obsidian.md
+```
+
+Then:
+
+1. Sign in with an Obsidian account.
+2. Link the GitHub account `pilafdob` to the Obsidian profile.
+3. Open **Plugins** in the sidebar.
+4. Select **New plugin**.
+5. Submit this repository URL:
+
+```text
+https://github.com/pilafdob/folderandgraphs-plus
+```
+
+## Published release
+
+The required GitHub release is already public:
+
+```text
+https://github.com/pilafdob/folderandgraphs-plus/releases/tag/0.3.0
+```
+
+Release assets:
+
+- `main.js`
+- `manifest.json`
+
+## Directory metadata
+
+The directory reads `manifest.json` from the default branch and downloads release assets from the matching GitHub release tag.
+
+Current manifest:
 
 ```json
 {
   "id": "folderandgraphs-plus",
   "name": "Folder and Graphs Plus",
-  "author": "pilafdob",
+  "version": "0.3.0",
+  "minAppVersion": "1.4.16",
   "description": "Colours Folder2Graph folder nodes with matching native Graph View group colours.",
-  "repo": "pilafdob/folderandgraphs-plus"
+  "author": "pilafdob",
+  "isDesktopOnly": false
 }
 ```
 
-## PR checklist notes
+## Before selecting Submit
 
-- Tested locally with `npm test`.
-- Production bundle generated with `npm run build`.
-- Static mobile compatibility audit found no Electron, shell, Node filesystem, or child-process runtime APIs.
-- GitHub release must contain individual `main.js` and `manifest.json` files.
-- GitHub release name/tag must be exactly `0.3.0`, without a `v` prefix.
-- `manifest.json` id is `folderandgraphs-plus`.
-- Project license is MIT in `LICENSE`.
-- Bundled Folders to Graph code is MIT licensed and attributed in `README.md` and `THIRD_PARTY_NOTICES.md`.
-
-## PR body starter
-
-```markdown
-# I am submitting a new Community Plugin
-
-- [x] I attest that I have done my best to deliver a high-quality plugin, am proud of the code I have written, and would recommend it to others. I commit to maintaining the plugin and being responsive to bug reports. If I am no longer able to maintain it, I will make reasonable efforts to find a successor maintainer or withdraw the plugin from the directory.
-
-## Repo URL
-
-Link to my plugin: https://github.com/pilafdob/folderandgraphs-plus
-
-## Release Checklist
-
-- [ ] I have tested the plugin on
-- [ ] Windows
-- [x] macOS
-- [ ] Linux
-- [ ] Android
-- [ ] iOS
-- [x] My GitHub release contains all required files (as individual files, not just in the source.zip / source.tar.gz)
-- [x] `main.js`
-- [x] `manifest.json`
-- [ ] `styles.css` _(optional)_
-- [x] GitHub release name matches the exact version number specified in my manifest.json (_**Note:** Use the exact version number, don't include a prefix `v`_)
-- [x] The `id` in my `manifest.json` matches the `id` in the `community-plugins.json` file.
-- [x] My README.md describes the plugin's purpose and provides clear usage instructions.
-- [ ] I have read the developer policies at https://docs.obsidian.md/Developer+policies, and have assessed my plugin's adherence to these policies.
-- [ ] I have read the tips in https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines and have self-reviewed my plugin to avoid these common pitfalls.
-- [x] I have added a license in the LICENSE file.
-- [x] My project respects and is compatible with the original license of any code from other plugins that I'm using. I have given proper attribution to these other projects in my `README.md`.
-```
+- Read and agree to the developer policies shown in the community directory.
+- Confirm that the plugin will continue to be supported.
+- Confirm that the release assets are present on GitHub.
+- Confirm that bundled Folders to Graph code is attributed in `README.md` and `THIRD_PARTY_NOTICES.md`.
