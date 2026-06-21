@@ -1,0 +1,10 @@
+node_modules/
+.npm-cache/
+*.log
+.DS_Store
+
+# Obsidian local plugin data
+data.json
+
+# Local build/watch artifacts
+main.js.map
