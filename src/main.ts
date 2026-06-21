@@ -10,6 +10,7 @@ import {
 } from "obsidian";
 import {
   type FolderColorRule,
+  type FolderColorChildRule,
   type FolderColorRuleType,
   type GraphColor,
   type GraphColorGroup,
@@ -76,6 +77,8 @@ type PatchableGraphNode = {
   radius?: unknown;
   r?: unknown;
   alpha?: unknown;
+  __folderAndGraphsPlusRingBaseGeometry?: { x: number; y: number; radius: number };
+  __folderAndGraphsPlusRingSignature?: string;
   __folderAndGraphsPlusOriginalGetFillColor?: () => GraphColor;
   __folderAndGraphsPlusOriginalNodeRenderMethods?: Partial<Record<GraphRenderMethodName, GraphNodeRenderMethod>>;
   getFillColor?: () => GraphColor;
@@ -373,6 +376,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     const visual = this.getVisualForGraphNode(node);
     const rings = normalizeFolderRuleRings(visual?.rings);
     if (!visual || rings < 1) {
+      node.__folderAndGraphsPlusRingSignature = undefined;
       return;
     }
 
@@ -384,14 +388,26 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       return;
     }
 
-    const geometry = this.getNodeCircleGeometry(node, target);
+    const geometry = node.__folderAndGraphsPlusRingBaseGeometry ?? this.getNodeCircleGeometry(node, target);
     if (!geometry) {
       return;
     }
+    node.__folderAndGraphsPlusRingBaseGeometry = geometry;
 
     const alpha = visual.color.a ?? (typeof target.alpha === "number" ? target.alpha : 0.9);
     const lineWidth = 1.5;
     const gap = 3;
+    const signature = [
+      rings,
+      visual.color.rgb,
+      alpha,
+      geometry.x,
+      geometry.y,
+      geometry.radius
+    ].join(":");
+    if (node.__folderAndGraphsPlusRingSignature === signature) {
+      return;
+    }
 
     for (let index = 1; index <= rings; index += 1) {
       const radius = geometry.radius + (gap * index);
@@ -404,6 +420,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         target.closePath?.();
       }
     }
+
+    node.__folderAndGraphsPlusRingSignature = signature;
   }
 
   private getNodeRingTargets(node: PatchableGraphNode): PixiCircleLike[] {
@@ -947,7 +965,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private rememberNodePluginColors(data: GraphData): void {
     this.nodePluginColorsById = getGraphNodePluginColors(
       data.nodes,
-      this.settings.folderColorRules.filter((rule) => rule.colorLinks !== false),
+      this.settings.folderColorRules,
       (nodeId) => this.getFolderPathsForGraphNodeId(nodeId, data.nodes?.[nodeId]),
       (nodeId) => this.isFolderNode(nodeId, data.nodes?.[nodeId])
     );
@@ -1119,7 +1137,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         color: parseHexGraphColor(raw.color) ? raw.color : DEFAULT_FOLDER_RULE_COLOR,
         inheritToChildren: typeof raw.inheritToChildren === "boolean" ? raw.inheritToChildren : true,
         colorLinks: typeof raw.colorLinks === "boolean" ? raw.colorLinks : true,
-        rings: normalizeFolderRuleRings(raw.rings)
+        rings: normalizeFolderRuleRings(raw.rings),
+        children: this.parseFolderColorChildRules(raw.children)
       });
     }
 
@@ -1148,7 +1167,36 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         color: parseHexGraphColor(raw.color) ? raw.color : DEFAULT_FOLDER_RULE_COLOR,
         inheritToChildren: true,
         colorLinks: true,
-        rings: 0
+        rings: 0,
+        children: []
+      });
+    }
+
+    return rules;
+  }
+
+  private parseFolderColorChildRules(value: unknown): FolderColorChildRule[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const rules: FolderColorChildRule[] = [];
+    for (const item of value) {
+      if (typeof item !== "object" || item === null) {
+        continue;
+      }
+
+      const raw = item as Record<string, unknown>;
+      if (typeof raw.target !== "string" || (raw.type !== "folder" && raw.type !== "combined")) {
+        continue;
+      }
+
+      rules.push({
+        type: raw.type,
+        target: raw.target,
+        colorLinks: typeof raw.colorLinks === "boolean" ? raw.colorLinks : true,
+        rings: normalizeFolderRuleRings(raw.rings),
+        children: this.parseFolderColorChildRules(raw.children)
       });
     }
 
@@ -1331,102 +1379,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Folder colours").setHeading();
 
     for (const [index, rule] of this.plugin.settings.folderColorRules.entries()) {
-      const setting = new Setting(containerEl)
-        .setName(`Folder colour ${index + 1}`)
-        .setDesc(rule.type === "combined" ? "Combined same-name folder" : "Folder and descendants");
-
-      setting.addSearch((search) => {
-        search
-          .setPlaceholder("Search folders")
-          .setValue(rule.target)
-          .onChange(async (value) => {
-            this.plugin.settings.folderColorRules[index] = {
-              ...this.plugin.settings.folderColorRules[index],
-              type: "folder",
-              target: value
-            };
-            await this.saveAndRefresh();
-          });
-
-        new FolderColorSuggest(this.plugin, search.inputEl, async (suggestion) => {
-          this.plugin.settings.folderColorRules[index] = {
-            ...this.plugin.settings.folderColorRules[index],
-            type: suggestion.type,
-            target: suggestion.target
-          };
-          await this.saveAndRefresh();
-          this.renderSettings();
-        });
-      });
-
-      setting.addColorPicker((colorPicker) => {
-        colorPicker
-          .setValue(rule.color)
-          .onChange(async (value) => {
-            this.plugin.settings.folderColorRules[index] = {
-              ...this.plugin.settings.folderColorRules[index],
-              color: value
-            };
-            await this.saveAndRefresh();
-          });
-      });
-
-      this.addToggleTag(setting, "Children");
-      setting.addToggle((toggle) => {
-        toggle
-          .setTooltip("Notes of child folders have parent colour")
-          .setValue(rule.inheritToChildren)
-          .onChange(async (value) => {
-            this.plugin.settings.folderColorRules[index] = {
-              ...this.plugin.settings.folderColorRules[index],
-              inheritToChildren: value
-            };
-            await this.saveAndRefresh();
-          });
-      });
-
-      this.addToggleTag(setting, "Lines");
-      setting.addToggle((toggle) => {
-        toggle
-          .setTooltip("Colour graph lines that touch this folder colour")
-          .setValue(rule.colorLinks)
-          .onChange(async (value) => {
-            this.plugin.settings.folderColorRules[index] = {
-              ...this.plugin.settings.folderColorRules[index],
-              colorLinks: value
-            };
-            await this.saveAndRefresh();
-          });
-      });
-
-      this.addToggleTag(setting, "Rings");
-      setting.addText((text) => {
-        text.inputEl.type = "number";
-        text.inputEl.min = "0";
-        text.inputEl.max = String(MAX_FOLDER_RULE_RINGS);
-        text.inputEl.step = "1";
-        text
-          .setPlaceholder("0")
-          .setValue(String(normalizeFolderRuleRings(rule.rings)))
-          .onChange(async (value) => {
-            this.plugin.settings.folderColorRules[index] = {
-              ...this.plugin.settings.folderColorRules[index],
-              rings: normalizeFolderRuleRings(value)
-            };
-            await this.saveAndRefresh();
-          });
-      });
-
-      setting.addButton((button) => {
-        button
-          .setIcon("trash")
-          .setTooltip("Remove")
-          .onClick(async () => {
-            this.plugin.settings.folderColorRules.splice(index, 1);
-            await this.saveAndRefresh();
-            this.renderSettings();
-          });
-      });
+      this.renderFolderColorRule(containerEl, rule, this.plugin.settings.folderColorRules, index, 0, false);
     }
 
     new Setting(containerEl)
@@ -1442,12 +1395,150 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
               color: DEFAULT_FOLDER_RULE_COLOR,
               inheritToChildren: true,
               colorLinks: true,
-              rings: 0
+              rings: 0,
+              children: []
             });
             await this.saveAndRefresh();
             this.renderSettings();
           });
       });
+  }
+
+  private renderFolderColorRule(
+    containerEl: HTMLElement,
+    rule: FolderColorRule | FolderColorChildRule,
+    siblings: (FolderColorRule | FolderColorChildRule)[],
+    index: number,
+    depth: number,
+    isChild: boolean
+  ): void {
+    const rowEl = containerEl.createDiv();
+    rowEl.style.marginLeft = `${depth * 18}px`;
+
+    const setting = new Setting(rowEl)
+      .setName(this.getFolderRuleName(rule, index, isChild))
+      .setDesc(this.getFolderRuleDescription(rule, isChild));
+
+    setting.addSearch((search) => {
+      search
+        .setPlaceholder(isChild ? "Search child folders" : "Search folders")
+        .setValue(rule.target)
+        .onChange(async (value) => {
+          rule.type = "folder";
+          rule.target = value;
+          await this.saveAndRefresh();
+        });
+
+      new FolderColorSuggest(this.plugin, search.inputEl, async (suggestion) => {
+        rule.type = suggestion.type;
+        rule.target = suggestion.target;
+        await this.saveAndRefresh();
+        this.renderSettings();
+      });
+    });
+
+    if (!isChild) {
+      const topLevelRule = rule as FolderColorRule;
+      setting.addColorPicker((colorPicker) => {
+        colorPicker
+          .setValue(topLevelRule.color)
+          .onChange(async (value) => {
+            topLevelRule.color = value;
+            await this.saveAndRefresh();
+          });
+      });
+
+      this.addToggleTag(setting, "Children");
+      setting.addToggle((toggle) => {
+        toggle
+          .setTooltip("Notes of child folders have parent colour")
+          .setValue(topLevelRule.inheritToChildren)
+          .onChange(async (value) => {
+            topLevelRule.inheritToChildren = value;
+            await this.saveAndRefresh();
+          });
+      });
+    }
+
+    this.addToggleTag(setting, "Lines");
+    setting.addToggle((toggle) => {
+      toggle
+        .setTooltip(isChild ? "Colour graph lines for this nested folder rule" : "Colour graph lines that touch this folder colour")
+        .setValue(rule.colorLinks)
+        .onChange(async (value) => {
+          rule.colorLinks = value;
+          await this.saveAndRefresh();
+        });
+    });
+
+    this.addToggleTag(setting, "Rings");
+    setting.addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "0";
+      text.inputEl.max = String(MAX_FOLDER_RULE_RINGS);
+      text.inputEl.step = "1";
+      text
+        .setPlaceholder("0")
+        .setValue(String(normalizeFolderRuleRings(rule.rings)))
+        .onChange(async (value) => {
+          rule.rings = normalizeFolderRuleRings(value);
+          await this.saveAndRefresh();
+        });
+    });
+
+    setting.addButton((button) => {
+      button
+        .setIcon("plus")
+        .setTooltip("Add child folder")
+        .onClick(async () => {
+          rule.children.push({
+            type: "folder",
+            target: "",
+            colorLinks: true,
+            rings: 0,
+            children: []
+          });
+          await this.saveAndRefresh();
+          this.renderSettings();
+        });
+    });
+
+    setting.addButton((button) => {
+      button
+        .setIcon("trash")
+        .setTooltip("Remove")
+        .onClick(async () => {
+          siblings.splice(index, 1);
+          await this.saveAndRefresh();
+          this.renderSettings();
+        });
+    });
+
+    for (const [childIndex, childRule] of rule.children.entries()) {
+      this.renderFolderColorRule(containerEl, childRule, rule.children, childIndex, depth + 1, true);
+    }
+  }
+
+  private getFolderRuleName(
+    rule: FolderColorRule | FolderColorChildRule,
+    index: number,
+    isChild: boolean
+  ): string {
+    if (!isChild) {
+      return `Folder colour ${index + 1}`;
+    }
+
+    return rule.type === "combined" ? `Combined child folder ${index + 1}` : `Child folder ${index + 1}`;
+  }
+
+  private getFolderRuleDescription(rule: FolderColorRule | FolderColorChildRule, isChild: boolean): string {
+    if (isChild) {
+      return rule.type === "combined"
+        ? "Nested combined folder, inherits parent colour"
+        : "Nested folder, inherits parent colour";
+    }
+
+    return rule.type === "combined" ? "Combined same-name folder" : "Folder and descendants";
   }
 
   private async saveAndRefresh(): Promise<void> {

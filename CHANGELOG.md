@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0
+
+- Add nested folder child customizations under folder colour rules.
+- Allow nested child rows to inherit parent colours while overriding rings and graph line colouring.
+- Fix floating node rings so they do not multiply on redraw and can inherit to child folder notes.
+
 ## 1.0.3
 
 - Add per-folder floating node rings with a selectable ring count in folder colour settings.

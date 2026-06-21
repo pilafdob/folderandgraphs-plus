@@ -1,7 +1,7 @@
 {
   "id": "folderandgraphs-plus",
   "name": "Folder and Graphs Plus",
-  "version": "1.0.3",
+  "version": "1.4.0",
   "minAppVersion": "1.4.16",
   "description": "Colours Folder2Graph folder nodes with matching native Graph View group colours.",
   "author": "pilafdob",

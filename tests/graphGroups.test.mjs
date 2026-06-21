@@ -163,8 +163,159 @@ test("folder colour rule visual includes rings from the winning rule", () => {
 
   assert.deepEqual(getFolderColorRuleVisual(["Biology/studying"], rules, "fileNode"), {
     color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
     rings: 2
   });
+});
+
+test("folder rings inherit to child files even when a closer colour rule has no rings", () => {
+  const rules = [
+    { type: "folder", target: "Biology", color: "#ff0000", inheritToChildren: true, rings: 1 },
+    { type: "folder", target: "Biology/studying", color: "#00ff00", inheritToChildren: true, rings: 0 }
+  ];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/studying"], rules, "fileNode"), {
+    color: { a: 1, rgb: 65280 },
+    colorLinks: true,
+    rings: 1
+  });
+});
+
+test("nearest positive child ring count overrides inherited parent rings", () => {
+  const rules = [
+    { type: "folder", target: "Biology", color: "#ff0000", inheritToChildren: true, rings: 1 },
+    { type: "folder", target: "Biology/studying", color: "#00ff00", inheritToChildren: true, rings: 3 }
+  ];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/studying"], rules, "fileNode"), {
+    color: { a: 1, rgb: 65280 },
+    colorLinks: true,
+    rings: 3
+  });
+});
+
+test("nested normal child rule matches only inside its parent scope", () => {
+  const rules = [{
+    type: "folder",
+    target: "Biology",
+    color: "#ff0000",
+    inheritToChildren: true,
+    rings: 0,
+    children: [{ type: "folder", target: "Studying", colorLinks: true, rings: 2, children: [] }]
+  }];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    rings: 2
+  });
+  assert.equal(getFolderColorRuleVisual(["Physics/Studying"], rules, "fileNode"), null);
+});
+
+test("nested combined child rule matches same basename only inside parent scope", () => {
+  const rules = [{
+    type: "folder",
+    target: "Biology",
+    color: "#ff0000",
+    inheritToChildren: true,
+    rings: 0,
+    children: [{ type: "combined", target: "Studying", colorLinks: true, rings: 2, children: [] }]
+  }];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Archive/Studying"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    rings: 2
+  });
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Archive/Reading"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    rings: 0
+  });
+});
+
+test("child under combined parent applies under each matching parent basename", () => {
+  const rules = [{
+    type: "combined",
+    target: "Studying",
+    color: "#ff0000",
+    inheritToChildren: true,
+    rings: 0,
+    children: [{ type: "folder", target: "Schoolwork", colorLinks: true, rings: 2, children: [] }]
+  }];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying/Schoolwork"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    rings: 2
+  });
+  assert.deepEqual(getFolderColorRuleVisual(["Physics/Studying/Schoolwork"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    rings: 2
+  });
+});
+
+test("nested grandchild rule overrides child rings and line colouring", () => {
+  const rules = [{
+    type: "folder",
+    target: "Biology",
+    color: "#ff0000",
+    inheritToChildren: true,
+    colorLinks: true,
+    rings: 0,
+    children: [{
+      type: "folder",
+      target: "Studying",
+      colorLinks: true,
+      rings: 1,
+      children: [{ type: "folder", target: "Exams", colorLinks: false, rings: 3, children: [] }]
+    }]
+  }];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying/Exams"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: false,
+    rings: 3
+  });
+});
+
+test("nested child rule inherits ancestor colour over global child folder colour", () => {
+  const rules = [
+    {
+      type: "folder",
+      target: "Biology",
+      color: "#ff0000",
+      inheritToChildren: true,
+      rings: 0,
+      children: [{ type: "folder", target: "Studying", colorLinks: true, rings: 2, children: [] }]
+    },
+    { type: "folder", target: "Biology/Studying", color: "#00ff00", inheritToChildren: true, rings: 0 }
+  ];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    rings: 2
+  });
+});
+
+test("explicit child rule can match when parent child-note inheritance is disabled", () => {
+  const rules = [{
+    type: "folder",
+    target: "Biology",
+    color: "#ff0000",
+    inheritToChildren: false,
+    rings: 0,
+    children: [{ type: "folder", target: "Studying", colorLinks: true, rings: 2, children: [] }]
+  }];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    rings: 2
+  });
+  assert.equal(getFolderColorRuleVisual(["Biology/Lab"], rules, "fileNode"), null);
 });
 
 test("folder colour rule visual defaults missing ring counts to zero", () => {
@@ -172,6 +323,7 @@ test("folder colour rule visual defaults missing ring counts to zero", () => {
 
   assert.deepEqual(getFolderColorRuleVisual(["Biology"], rules), {
     color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
     rings: 0
   });
 });
@@ -196,6 +348,7 @@ test("folder visual fallback uses native colour with no rings", () => {
 
   assert.deepEqual(getFolderVisualForPaths(["Projects/Weekly"], groups, rules), {
     color: { a: 1, rgb: 333 },
+    colorLinks: true,
     rings: 0
   });
 });
@@ -306,13 +459,42 @@ test("graph node plugin colours can omit rules disabled for line colouring", () 
 
   const colors = getGraphNodePluginColors(
     nodes,
-    rules.filter((rule) => rule.colorLinks !== false),
+    rules,
     (nodeId) => folders[nodeId] ?? [],
     () => false
   );
 
   assert.equal(colors.has("Biology/studying/spoken exam.md"), false);
   assert.deepEqual(colors.get("Physics/Studying/forces.md"), { a: 1, rgb: 255 });
+});
+
+test("graph node plugin colours respect nested line-colouring overrides", () => {
+  const rules = [{
+    type: "folder",
+    target: "Biology",
+    color: "#ff0000",
+    inheritToChildren: true,
+    colorLinks: true,
+    children: [{ type: "folder", target: "Studying", colorLinks: false, rings: 0, children: [] }]
+  }];
+  const nodes = {
+    "Biology/Studying/spoken exam.md": { links: { "Biology/Lab/report.md": true } },
+    "Biology/Lab/report.md": { links: { "Biology/Studying/spoken exam.md": true } }
+  };
+  const folders = {
+    "Biology/Studying/spoken exam.md": ["Biology/Studying"],
+    "Biology/Lab/report.md": ["Biology/Lab"]
+  };
+
+  const colors = getGraphNodePluginColors(
+    nodes,
+    rules,
+    (nodeId) => folders[nodeId] ?? [],
+    () => false
+  );
+
+  assert.equal(colors.has("Biology/Studying/spoken exam.md"), false);
+  assert.deepEqual(colors.get("Biology/Lab/report.md"), { a: 1, rgb: 16711680 });
 });
 
 test("link colour decision splits different endpoint colours", () => {

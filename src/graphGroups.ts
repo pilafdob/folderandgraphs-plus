@@ -10,6 +10,14 @@ export type GraphColorGroup = {
 
 export type FolderColorRuleType = "folder" | "combined";
 
+export type FolderColorChildRule = {
+  type: FolderColorRuleType;
+  target: string;
+  colorLinks: boolean;
+  rings: number;
+  children: FolderColorChildRule[];
+};
+
 export type FolderColorRule = {
   type: FolderColorRuleType;
   target: string;
@@ -17,6 +25,7 @@ export type FolderColorRule = {
   inheritToChildren: boolean;
   colorLinks: boolean;
   rings: number;
+  children: FolderColorChildRule[];
 };
 
 export type GraphLinkColorNode = {
@@ -46,7 +55,9 @@ type PathToken = {
 
 type FolderColorRuleMatch = {
   color: GraphColor;
+  colorLinks: boolean;
   depth: number;
+  level: number;
   priority: number;
   rings: number;
   ruleIndex: number;
@@ -55,6 +66,7 @@ type FolderColorRuleMatch = {
 
 export type FolderColorVisual = {
   color: GraphColor;
+  colorLinks: boolean;
   rings: number;
 };
 
@@ -169,7 +181,35 @@ export function getFolderColorRuleVisual(
 ): FolderColorVisual | null {
   const matches = getSortedFolderColorRuleMatches(folderPaths, rules, mode);
   const match = matches[matches.length - 1];
-  return match ? { color: match.color, rings: match.rings } : null;
+  return match
+    ? {
+        color: match.color,
+        colorLinks: getWinningColorLinks(matches),
+        rings: getWinningRingCount(matches)
+      }
+    : null;
+}
+
+function getWinningColorLinks(matches: readonly FolderColorRuleMatch[]): boolean {
+  for (let index = matches.length - 1; index >= 0; index -= 1) {
+    const match = matches[index];
+    if (match) {
+      return match.colorLinks;
+    }
+  }
+
+  return true;
+}
+
+function getWinningRingCount(matches: readonly FolderColorRuleMatch[]): number {
+  for (let index = matches.length - 1; index >= 0; index -= 1) {
+    const rings = matches[index]?.rings ?? 0;
+    if (rings > 0) {
+      return rings;
+    }
+  }
+
+  return 0;
 }
 
 function getSortedFolderColorRuleMatches(
@@ -192,24 +232,22 @@ function getSortedFolderColorRuleMatches(
       return;
     }
 
-    const match = getFolderColorRuleMatch(folderPaths, rule, target, mode);
-    if (!match) {
+    const ruleMatches = getFolderColorRuleMatches(folderPaths, rule, target, mode, color, ruleIndex);
+    if (ruleMatches.length === 0) {
       return;
     }
 
-    matches.push({
-      color,
-      depth: match.depth,
-      priority: match.priority,
-      rings: normalizeFolderRuleRings(rule.rings),
-      ruleIndex,
-      targetKey
-    });
+    matches.push(...ruleMatches.map((match) => ({ ...match, targetKey })));
     seenTargets.add(targetKey);
   });
 
   return matches
-    .sort((a, b) => a.priority - b.priority || a.depth - b.depth || a.ruleIndex - b.ruleIndex);
+    .sort((a, b) => (
+      a.priority - b.priority ||
+      a.depth - b.depth ||
+      a.level - b.level ||
+      a.ruleIndex - b.ruleIndex
+    ));
 }
 
 export function getFolderColorRuleColor(
@@ -221,13 +259,15 @@ export function getFolderColorRuleColor(
   return colors[colors.length - 1] ?? null;
 }
 
-function getFolderColorRuleMatch(
+function getFolderColorRuleMatches(
   folderPaths: readonly string[],
   rule: FolderColorRule,
   target: string,
-  mode: FolderColorMatchMode
-): { depth: number; priority: number } | null {
-  let bestMatch: { depth: number; priority: number } | null = null;
+  mode: FolderColorMatchMode,
+  color: GraphColor,
+  ruleIndex: number
+): FolderColorRuleMatch[] {
+  const matches: FolderColorRuleMatch[] = [];
 
   for (const folderPath of folderPaths) {
     const normalizedPath = normalizeVaultPath(folderPath);
@@ -239,17 +279,36 @@ function getFolderColorRuleMatch(
       ? getCombinedFolderMatch(normalizedPath, target, mode)
       : getFolderRuleMatch(normalizedPath, target, rule.inheritToChildren !== false, mode);
 
-    if (
-      match &&
-      (!bestMatch ||
-        match.priority > bestMatch.priority ||
-        (match.priority === bestMatch.priority && match.depth > bestMatch.depth))
-    ) {
-      bestMatch = match;
+    const childScope = match ?? getFolderRuleChildScope(normalizedPath, rule, target);
+    if (!childScope) {
+      continue;
     }
+
+    if (match) {
+      matches.push({
+        color,
+        colorLinks: rule.colorLinks !== false,
+        depth: match.depth,
+        level: 0,
+        priority: match.priority,
+        rings: normalizeFolderRuleRings(rule.rings),
+        ruleIndex,
+        targetKey: `${rule.type}:${target}`
+      });
+    }
+
+    matches.push(...getNestedFolderColorRuleMatches(
+      normalizedPath,
+      rule.children ?? [],
+      childScope.scope,
+      color,
+      mode,
+      1,
+      ruleIndex
+    ));
   }
 
-  return bestMatch;
+  return matches;
 }
 
 function getFolderRuleMatch(
@@ -257,16 +316,16 @@ function getFolderRuleMatch(
   target: string,
   inheritToChildren: boolean,
   mode: FolderColorMatchMode
-): { depth: number; priority: number } | null {
+): { depth: number; priority: number; scope: string } | null {
   const depth = target.split("/").filter(Boolean).length;
 
   if (folderPath === target) {
-    return { depth, priority: 3 };
+    return { depth, priority: 3, scope: target };
   }
 
   if (mode === "folderNode" || inheritToChildren) {
     return folderPathMatchesPathRule(folderPath, target)
-      ? { depth, priority: mode === "fileNode" ? 2 : 1 }
+      ? { depth, priority: mode === "fileNode" ? 2 : 1, scope: target }
       : null;
   }
 
@@ -277,11 +336,127 @@ function getCombinedFolderMatch(
   folderPath: string,
   target: string,
   mode: FolderColorMatchMode
-): { depth: number; priority: number } | null {
+): { depth: number; priority: number; scope: string } | null {
   const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
   for (let index = parts.length - 1; index >= 0; index -= 1) {
     if (parts[index] === target) {
-      return { depth: index + 1, priority: mode === "fileNode" ? 1 : 2 };
+      return {
+        depth: index + 1,
+        priority: mode === "fileNode" ? 1 : 2,
+        scope: parts.slice(0, index + 1).join("/")
+      };
+    }
+  }
+
+  return null;
+}
+
+function getFolderRuleChildScope(
+  folderPath: string,
+  rule: FolderColorRule,
+  target: string
+): { scope: string } | null {
+  if (rule.type !== "folder" || (rule.children ?? []).length === 0) {
+    return null;
+  }
+
+  return folderPathMatchesPathRule(folderPath, target) ? { scope: target } : null;
+}
+
+function getNestedFolderColorRuleMatches(
+  folderPath: string,
+  children: readonly FolderColorChildRule[],
+  parentScope: string,
+  color: GraphColor,
+  mode: FolderColorMatchMode,
+  level: number,
+  parentRuleIndex: number
+): FolderColorRuleMatch[] {
+  const matches: FolderColorRuleMatch[] = [];
+
+  children.forEach((child, childIndex) => {
+    const target = normalizeVaultPath(child.target);
+    if (!target) {
+      return;
+    }
+
+    const match = child.type === "combined"
+      ? getScopedCombinedFolderMatch(folderPath, target, parentScope, mode)
+      : getScopedFolderRuleMatch(folderPath, target, parentScope, mode);
+    if (!match) {
+      return;
+    }
+
+    const colorLinks = child.colorLinks !== false;
+    matches.push({
+      color,
+      colorLinks,
+      depth: match.depth,
+      level,
+      priority: match.priority,
+      rings: normalizeFolderRuleRings(child.rings),
+      ruleIndex: parentRuleIndex + ((childIndex + 1) / 1000),
+      targetKey: `${level}:${child.type}:${target}`
+    });
+    matches.push(...getNestedFolderColorRuleMatches(
+      folderPath,
+      child.children ?? [],
+      match.scope,
+      color,
+      mode,
+      level + 1,
+      parentRuleIndex + ((childIndex + 1) / 1000)
+    ));
+  });
+
+  return matches;
+}
+
+function getScopedFolderRuleMatch(
+  folderPath: string,
+  target: string,
+  parentScope: string,
+  mode: FolderColorMatchMode
+): { depth: number; priority: number; scope: string } | null {
+  const scopedTarget = getScopedFolderTarget(target, parentScope);
+  if (!scopedTarget) {
+    return null;
+  }
+
+  const depth = scopedTarget.split("/").filter(Boolean).length;
+  return folderPathMatchesPathRule(folderPath, scopedTarget)
+    ? { depth, priority: mode === "fileNode" ? 4 : 3, scope: scopedTarget }
+    : null;
+}
+
+function getScopedFolderTarget(target: string, parentScope: string): string | null {
+  if (folderPathMatchesPathRule(target, parentScope)) {
+    return target;
+  }
+
+  const basename = folderBasenameFromPath(target);
+  return basename ? `${parentScope}/${basename}` : null;
+}
+
+function getScopedCombinedFolderMatch(
+  folderPath: string,
+  target: string,
+  parentScope: string,
+  mode: FolderColorMatchMode
+): { depth: number; priority: number; scope: string } | null {
+  if (!folderPathMatchesPathRule(folderPath, parentScope)) {
+    return null;
+  }
+
+  const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
+  const parentDepth = parentScope.split("/").filter(Boolean).length;
+  for (let index = parts.length - 1; index >= parentDepth; index -= 1) {
+    if (parts[index] === target) {
+      return {
+        depth: index + 1,
+        priority: mode === "fileNode" ? 4 : 3,
+        scope: parts.slice(0, index + 1).join("/")
+      };
     }
   }
 
@@ -314,13 +489,13 @@ export function getGraphNodePluginColors(
   const colorsByNodeId = new Map<string, GraphColor>();
 
   for (const nodeId of Object.keys(nodes ?? {})) {
-    const color = getDeepestFolderColorForPaths(
+    const visual = getFolderColorRuleVisual(
       getNodeFolderPaths(nodeId),
       folderColorRules,
       isFolderNode(nodeId) ? "folderNode" : "fileNode"
     );
-    if (color) {
-      colorsByNodeId.set(nodeId, color);
+    if (visual?.color && visual.colorLinks) {
+      colorsByNodeId.set(nodeId, visual.color);
     }
   }
 
@@ -368,7 +543,7 @@ export function getFolderVisualForPaths(
   }
 
   const fallbackColor = getFolderGroupColorForPaths(folderPaths, colorGroups);
-  return fallbackColor ? { color: fallbackColor, rings: 0 } : null;
+  return fallbackColor ? { color: fallbackColor, colorLinks: true, rings: 0 } : null;
 }
 
 export function getFolderGroupColor(
