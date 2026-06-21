@@ -45,11 +45,11 @@ Optional file:
 
 ## GitHub first release
 
-Use a tag that exactly matches `manifest.json` `version`; for the current version, use `0.3.0`, not `v0.3.0`.
+Use the release tag `v1.0.0` for the current version.
 
 ```bash
-git tag 0.3.0
-git push origin 0.3.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 The GitHub Action creates a draft release containing `main.js` and `manifest.json`.

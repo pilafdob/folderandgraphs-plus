@@ -1,25 +1,48 @@
-import { Plugin, PluginSettingTab, Setting, type WorkspaceLeaf } from "obsidian";
 import {
+  AbstractInputSuggest,
+  Plugin,
+  PluginSettingTab,
+  Setting,
+  TFolder,
+  prepareFuzzySearch,
+  type TAbstractFile,
+  type WorkspaceLeaf
+} from "obsidian";
+import {
+  type FolderColorRule,
+  type FolderColorRuleType,
   type GraphColor,
   type GraphColorGroup,
   folderPathFromNodeId,
-  getFolderGroupColorForPaths
+  getFolderColorForPaths,
+  getGraphLinkColorDecision,
+  getGraphNodePluginColors,
+  parseHexGraphColor
 } from "./graphGroups";
 import Folder2GraphPlugin from "./vendor/folders2graph/main";
 
 const FOLDER2GRAPH_NODE_TYPE = "f2g_node";
+const DEFAULT_FOLDER_RULE_COLOR = "#5c8af5";
 
 type FolderAndGraphsPlusSettings = {
   combineSameNameFolders: boolean;
+  folderColorRules: FolderColorRule[];
   folder2graph?: Record<string, unknown>;
 };
 
 const DEFAULT_SETTINGS: FolderAndGraphsPlusSettings = {
-  combineSameNameFolders: false
+  combineSameNameFolders: false,
+  folderColorRules: []
 };
 
 type GraphRenderer = {
   nodes?: unknown[];
+  links?: unknown;
+  edges?: unknown;
+  linkNodes?: unknown;
+  linkObjects?: unknown;
+  renderer?: Record<string, unknown>;
+  graph?: Record<string, unknown>;
   changed?: () => void;
   setData?: (data: GraphData) => unknown;
   originalSetData?: (data: GraphData) => unknown;
@@ -50,10 +73,68 @@ type PatchableGraphNode = {
   getFillColor?: () => GraphColor;
 };
 
+type GraphRenderMethodName = "render" | "draw" | "updateGraphics";
+
+type PatchableGraphLink = {
+  source?: unknown;
+  target?: unknown;
+  from?: unknown;
+  to?: unknown;
+  sourceNode?: unknown;
+  targetNode?: unknown;
+  node1?: unknown;
+  node2?: unknown;
+  a?: unknown;
+  b?: unknown;
+  line?: unknown;
+  graphics?: unknown;
+  path?: unknown;
+  container?: unknown;
+  sprite?: unknown;
+  x1?: unknown;
+  y1?: unknown;
+  x2?: unknown;
+  y2?: unknown;
+  sourceX?: unknown;
+  sourceY?: unknown;
+  targetX?: unknown;
+  targetY?: unknown;
+  __folderAndGraphsPlusOriginalLinkRenderMethods?: Partial<Record<GraphRenderMethodName, GraphLinkRenderMethod>>;
+  render?: GraphLinkRenderMethod;
+  draw?: GraphLinkRenderMethod;
+  updateGraphics?: GraphLinkRenderMethod;
+};
+
+type GraphLinkRenderMethod = (this: PatchableGraphLink, ...args: unknown[]) => unknown;
+
+type PixiLineLike = {
+  tint?: number;
+  alpha?: number;
+  lineWidth?: number;
+  width?: number;
+  clear?: () => void;
+  moveTo?: (x: number, y: number) => void;
+  lineTo?: (x: number, y: number) => void;
+  lineStyle?: (width?: number, color?: number, alpha?: number) => void;
+};
+
+type GraphPoint = {
+  x: number;
+  y: number;
+};
+
+type GraphLinkEndpoints = {
+  sourceId: string;
+  targetId: string;
+  directed: boolean;
+  source: unknown;
+  target: unknown;
+};
+
 type GraphNodeData = {
   type?: unknown;
   folderNode?: unknown;
-  links?: Record<string, boolean>;
+  links?: Record<string, unknown>;
   [key: string]: unknown;
 };
 
@@ -64,14 +145,23 @@ type GraphData = {
 
 type Folder2GraphSettings = Record<string, unknown>;
 
+type FolderColorSuggestion = {
+  type: FolderColorRuleType;
+  target: string;
+  label: string;
+  detail: string;
+};
+
 export default class FolderAndGraphsPlusPlugin extends Plugin {
   settings: FolderAndGraphsPlusSettings = { ...DEFAULT_SETTINGS };
   private bundledFolder2Graph: Plugin | null = null;
   private patchedPrototype: PatchableGraphNode | null = null;
   private originalGetFillColor: (() => GraphColor) | null = null;
   private patchedGetFillColor: (() => GraphColor) | null = null;
+  private patchedLinkPrototypes = new Set<PatchableGraphLink>();
   private colorGroups: GraphColorGroup[] = [];
   private combinedFolderPathsByNodeId = new Map<string, string[]>();
+  private nodePluginColorsById = new Map<string, GraphColor>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -109,6 +199,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       delete this.patchedPrototype.__folderAndGraphsPlusOriginalGetFillColor;
     }
 
+    this.restoreGraphLinkRenderMethods();
     this.patchedPrototype = null;
     this.originalGetFillColor = null;
     this.patchedGetFillColor = null;
@@ -132,6 +223,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         this.patchNodePrototype(renderer.nodes[0]);
       }
 
+      this.patchGraphLinkRendering(renderer);
       renderer.changed?.();
     }
   }
@@ -168,14 +260,11 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     this.originalGetFillColor = original;
     prototype.__folderAndGraphsPlusOriginalGetFillColor = original;
 
-    const getColorForFolderPath = this.getColorForFolderPath.bind(this);
+    const getColorForGraphNode = this.getColorForGraphNode.bind(this);
     const patchedGetFillColor = function patchedGetFillColor(this: PatchableGraphNode): GraphColor {
-      if (this.type === FOLDER2GRAPH_NODE_TYPE) {
-        const folderPath = folderPathFromNodeId(this.id);
-        const color = getColorForFolderPath(folderPath);
-        if (color) {
-          return color;
-        }
+      const color = getColorForGraphNode(this);
+      if (color) {
+        return color;
       }
 
       return original.call(this);
@@ -185,9 +274,329 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     prototype.getFillColor = patchedGetFillColor;
   }
 
-  private getColorForFolderPath(folderPath: string): GraphColor | null {
-    const folderPaths = this.combinedFolderPathsByNodeId.get(`/${folderPath}`) ?? [folderPath];
-    return getFolderGroupColorForPaths(folderPaths, this.colorGroups);
+  private getColorForGraphNode(node: PatchableGraphNode): GraphColor | null {
+    const folderPaths = this.getFolderPathsForGraphNode(node);
+    if (folderPaths.length === 0) {
+      return null;
+    }
+
+    return getFolderColorForPaths(
+      folderPaths,
+      this.colorGroups,
+      this.settings.folderColorRules,
+      this.isFolderGraphNode(node) ? "folderNode" : "fileNode"
+    );
+  }
+
+  private isFolderGraphNode(node: PatchableGraphNode): boolean {
+    return node.type === FOLDER2GRAPH_NODE_TYPE;
+  }
+
+  private patchGraphLinkRendering(renderer: GraphRenderer): void {
+    for (const link of this.getRendererLinks(renderer)) {
+      const prototype = Object.getPrototypeOf(link) as PatchableGraphLink | null;
+      if (!prototype || this.patchedLinkPrototypes.has(prototype)) {
+        continue;
+      }
+
+      const originalMethods = prototype.__folderAndGraphsPlusOriginalLinkRenderMethods ?? {};
+      const applyColorToGraphLink = this.applyColorToGraphLink.bind(this);
+
+      for (const methodName of ["render", "draw", "updateGraphics"] as const) {
+        const original = prototype[methodName];
+        if (typeof original !== "function" || originalMethods[methodName]) {
+          continue;
+        }
+
+        originalMethods[methodName] = original;
+        prototype[methodName] = function folderAndGraphsPlusLinkRenderPatch(
+          this: PatchableGraphLink,
+          ...args: unknown[]
+        ): unknown {
+          const result = original.apply(this, args);
+          applyColorToGraphLink(this);
+          return result;
+        };
+      }
+
+      if (Object.keys(originalMethods).length > 0) {
+        prototype.__folderAndGraphsPlusOriginalLinkRenderMethods = originalMethods;
+        this.patchedLinkPrototypes.add(prototype);
+      }
+    }
+  }
+
+  private restoreGraphLinkRenderMethods(): void {
+    for (const prototype of this.patchedLinkPrototypes) {
+      const originalMethods = prototype.__folderAndGraphsPlusOriginalLinkRenderMethods;
+      if (!originalMethods) {
+        continue;
+      }
+
+      for (const [methodName, original] of Object.entries(originalMethods) as [
+        GraphRenderMethodName,
+        GraphLinkRenderMethod
+      ][]) {
+        prototype[methodName] = original;
+      }
+
+      delete prototype.__folderAndGraphsPlusOriginalLinkRenderMethods;
+    }
+
+    this.patchedLinkPrototypes.clear();
+  }
+
+  private getRendererLinks(renderer: GraphRenderer): PatchableGraphLink[] {
+    const candidates = [
+      renderer.links,
+      renderer.edges,
+      renderer.linkNodes,
+      renderer.linkObjects,
+      renderer.renderer?.links,
+      renderer.renderer?.edges,
+      renderer.graph?.links,
+      renderer.graph?.edges
+    ];
+
+    const links: PatchableGraphLink[] = [];
+    const seen = new Set<object>();
+
+    for (const candidate of candidates) {
+      const values = this.objectValues(candidate);
+      for (const value of values) {
+        if (this.isPatchableGraphLink(value) && !seen.has(value)) {
+          links.push(value);
+          seen.add(value);
+        }
+      }
+    }
+
+    return links;
+  }
+
+  private objectValues(value: unknown): unknown[] {
+    if (Array.isArray(value)) {
+      return value;
+    }
+
+    if (typeof value === "object" && value !== null) {
+      return Object.values(value as Record<string, unknown>);
+    }
+
+    return [];
+  }
+
+  private isPatchableGraphLink(value: unknown): value is PatchableGraphLink {
+    if (typeof value !== "object" || value === null) {
+      return false;
+    }
+
+    const link = value as PatchableGraphLink;
+    return (
+      (typeof link.render === "function" ||
+        typeof link.draw === "function" ||
+        typeof link.updateGraphics === "function") &&
+      this.getGraphLinkEndpoints(link) !== null
+    );
+  }
+
+  private applyColorToGraphLink(link: PatchableGraphLink): void {
+    const endpoints = this.getGraphLinkEndpoints(link);
+    if (!endpoints) {
+      return;
+    }
+
+    const decision = getGraphLinkColorDecision(
+      this.nodePluginColorsById.get(endpoints.sourceId),
+      this.nodePluginColorsById.get(endpoints.targetId)
+    );
+
+    if (decision.type === "default") {
+      return;
+    }
+
+    if (decision.type === "split" && this.drawSplitGraphLink(link, endpoints, decision.sourceColor, decision.targetColor)) {
+      return;
+    }
+
+    const color = decision.type === "solid" ? decision.color : decision.sourceColor;
+    for (const target of this.getLinkGraphicTargets(link)) {
+      this.applyColorToPixiLine(target, color);
+    }
+  }
+
+  private getGraphLinkEndpoints(link: PatchableGraphLink): GraphLinkEndpoints | null {
+    const directedPairs: [unknown, unknown][] = [
+      [link.source, link.target],
+      [link.from, link.to],
+      [link.sourceNode, link.targetNode]
+    ];
+
+    for (const [source, target] of directedPairs) {
+      const sourceId = this.getGraphEndpointId(source);
+      const targetId = this.getGraphEndpointId(target);
+      if (sourceId && targetId) {
+        return { sourceId, targetId, directed: true, source, target };
+      }
+    }
+
+    const undirectedPairs: [unknown, unknown][] = [
+      [link.node1, link.node2],
+      [link.a, link.b]
+    ];
+
+    for (const [source, target] of undirectedPairs) {
+      const sourceId = this.getGraphEndpointId(source);
+      const targetId = this.getGraphEndpointId(target);
+      if (sourceId && targetId) {
+        return { sourceId, targetId, directed: false, source, target };
+      }
+    }
+
+    return null;
+  }
+
+  private getGraphEndpointId(value: unknown): string | null {
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
+
+    if (typeof value !== "object" || value === null) {
+      return null;
+    }
+
+    const endpoint = value as { id?: unknown; node?: unknown };
+    if (typeof endpoint.id === "string" && endpoint.id.length > 0) {
+      return endpoint.id;
+    }
+
+    return this.getGraphEndpointId(endpoint.node);
+  }
+
+  private getLinkGraphicTargets(link: PatchableGraphLink): PixiLineLike[] {
+    return [link.line, link.graphics, link.path, link.container, link.sprite, link]
+      .filter((target): target is PixiLineLike => typeof target === "object" && target !== null);
+  }
+
+  private applyColorToPixiLine(target: PixiLineLike, color: GraphColor): void {
+    target.tint = color.rgb;
+
+    if (typeof target.lineStyle === "function") {
+      const width = typeof target.lineWidth === "number"
+        ? target.lineWidth
+        : typeof target.width === "number"
+          ? target.width
+          : 1;
+      target.lineStyle(width, color.rgb, color.a ?? target.alpha ?? 1);
+    }
+  }
+
+  private drawSplitGraphLink(
+    link: PatchableGraphLink,
+    endpoints: GraphLinkEndpoints,
+    sourceColor: GraphColor,
+    targetColor: GraphColor
+  ): boolean {
+    const sourcePoint = this.getGraphEndpointPoint(endpoints.source) ?? this.getLinkEndpointPoint(link, "source");
+    const targetPoint = this.getGraphEndpointPoint(endpoints.target) ?? this.getLinkEndpointPoint(link, "target");
+    if (!sourcePoint || !targetPoint) {
+      return false;
+    }
+
+    const target = this.getLinkGraphicTargets(link).find((graphic) => (
+      typeof graphic.clear === "function" &&
+      typeof graphic.lineStyle === "function" &&
+      typeof graphic.moveTo === "function" &&
+      typeof graphic.lineTo === "function"
+    ));
+    if (!target) {
+      return false;
+    }
+
+    const middle = {
+      x: (sourcePoint.x + targetPoint.x) / 2,
+      y: (sourcePoint.y + targetPoint.y) / 2
+    };
+    const width = this.getLineWidth(target);
+
+    target.clear?.();
+    target.lineStyle?.(width, sourceColor.rgb, sourceColor.a ?? target.alpha ?? 1);
+    target.moveTo?.(sourcePoint.x, sourcePoint.y);
+    target.lineTo?.(middle.x, middle.y);
+    target.lineStyle?.(width, targetColor.rgb, targetColor.a ?? target.alpha ?? 1);
+    target.moveTo?.(middle.x, middle.y);
+    target.lineTo?.(targetPoint.x, targetPoint.y);
+    return true;
+  }
+
+  private getGraphEndpointPoint(value: unknown): GraphPoint | null {
+    if (typeof value !== "object" || value === null) {
+      return null;
+    }
+
+    const endpoint = value as { x?: unknown; y?: unknown; node?: unknown };
+    if (typeof endpoint.x === "number" && typeof endpoint.y === "number") {
+      return { x: endpoint.x, y: endpoint.y };
+    }
+
+    return this.getGraphEndpointPoint(endpoint.node);
+  }
+
+  private getLinkEndpointPoint(link: PatchableGraphLink, endpoint: "source" | "target"): GraphPoint | null {
+    const x = endpoint === "source" ? link.x1 ?? link.sourceX : link.x2 ?? link.targetX;
+    const y = endpoint === "source" ? link.y1 ?? link.sourceY : link.y2 ?? link.targetY;
+
+    return typeof x === "number" && typeof y === "number" ? { x, y } : null;
+  }
+
+  private getLineWidth(target: PixiLineLike): number {
+    return typeof target.lineWidth === "number"
+      ? target.lineWidth
+      : typeof target.width === "number"
+        ? target.width
+        : 1;
+  }
+
+  private getFolderPathsForGraphNode(node: PatchableGraphNode): string[] {
+    if (typeof node.id !== "string" || node.id.length === 0 || node.type === "tag") {
+      return [];
+    }
+
+    if (node.type === FOLDER2GRAPH_NODE_TYPE) {
+      const folderPath = folderPathFromNodeId(node.id);
+      return this.combinedFolderPathsByNodeId.get(`/${folderPath}`) ?? [folderPath];
+    }
+
+    const nodePath = folderPathFromNodeId(node.id.split("#")[0]);
+    if (!nodePath) {
+      return [];
+    }
+
+    const file = this.resolveVaultFile(nodePath);
+    if (file) {
+      return [this.getParentFolderPath(file)];
+    }
+
+    const folder = this.app.vault.getFolderByPath(nodePath);
+    if (folder) {
+      return [folder.isRoot() ? "" : folder.path];
+    }
+
+    const slashIndex = nodePath.lastIndexOf("/");
+    return slashIndex < 0 ? [] : [nodePath.slice(0, slashIndex)];
+  }
+
+  private resolveVaultFile(path: string): TAbstractFile | null {
+    return (
+      this.app.vault.getAbstractFileByPath(path) ??
+      this.app.metadataCache.getFirstLinkpathDest(path, "") ??
+      this.app.metadataCache.getFirstLinkpathDest(path.replace(/\.md$/i, ""), "")
+    );
+  }
+
+  private getParentFolderPath(file: TAbstractFile): string {
+    const parent = file instanceof TFolder ? file : file.parent;
+    return !parent || parent.isRoot() ? "" : parent.path;
   }
 
   private async loadBundledFolder2GraphIfNeeded(): Promise<void> {
@@ -266,11 +675,13 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     const shouldCombineSameNameFolders = () => this.settings.combineSameNameFolders;
     const mergeSameNameFolderNodes = this.mergeSameNameFolderNodes.bind(this);
     const rememberSeparateFolderPaths = this.rememberSeparateFolderPaths.bind(this);
+    const rememberNodePluginColors = this.rememberNodePluginColors.bind(this);
     const wrapper = (data: GraphData): unknown => {
       const nextData = shouldCombineSameNameFolders()
         ? mergeSameNameFolderNodes(data)
         : rememberSeparateFolderPaths(data);
 
+      rememberNodePluginColors(nextData);
       return original.call(renderer, nextData);
     };
 
@@ -307,6 +718,15 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     }
 
     return data;
+  }
+
+  private rememberNodePluginColors(data: GraphData): void {
+    this.nodePluginColorsById = getGraphNodePluginColors(
+      data.nodes,
+      this.settings.folderColorRules.filter((rule) => rule.colorLinks !== false),
+      (nodeId) => this.getFolderPathsForGraphNodeId(nodeId, data.nodes?.[nodeId]),
+      (nodeId) => this.isFolderNode(nodeId, data.nodes?.[nodeId])
+    );
   }
 
   private mergeSameNameFolderNodes(data: GraphData): GraphData {
@@ -415,6 +835,10 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     return nodeId.startsWith("/") && node?.type === FOLDER2GRAPH_NODE_TYPE;
   }
 
+  private getFolderPathsForGraphNodeId(nodeId: string, node: GraphNodeData | undefined): string[] {
+    return this.getFolderPathsForGraphNode({ id: nodeId, type: node?.type });
+  }
+
   private getFolderBasename(nodeId: string): string {
     const folderPath = folderPathFromNodeId(nodeId);
     const parts = folderPath.split("/").filter(Boolean);
@@ -440,8 +864,69 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         typeof raw.combineSameNameFolders === "boolean"
           ? raw.combineSameNameFolders
           : DEFAULT_SETTINGS.combineSameNameFolders,
+      folderColorRules: this.parseFolderColorRules(raw.folderColorRules, raw.combinedFolderColorOverrides),
       folder2graph: this.parseFolder2GraphSettings(raw.folder2graph)
     };
+  }
+
+  private parseFolderColorRules(value: unknown, legacyOverrides: unknown): FolderColorRule[] {
+    if (!Array.isArray(value)) {
+      return this.parseLegacyCombinedFolderColorOverrides(legacyOverrides);
+    }
+
+    const rules: FolderColorRule[] = [];
+    for (const item of value) {
+      if (typeof item !== "object" || item === null) {
+        continue;
+      }
+
+      const raw = item as Record<string, unknown>;
+      if (
+        typeof raw.target !== "string" ||
+        typeof raw.color !== "string" ||
+        (raw.type !== "folder" && raw.type !== "combined")
+      ) {
+        continue;
+      }
+
+      rules.push({
+        type: raw.type,
+        target: raw.target,
+        color: parseHexGraphColor(raw.color) ? raw.color : DEFAULT_FOLDER_RULE_COLOR,
+        inheritToChildren: typeof raw.inheritToChildren === "boolean" ? raw.inheritToChildren : true,
+        colorLinks: typeof raw.colorLinks === "boolean" ? raw.colorLinks : true
+      });
+    }
+
+    return rules;
+  }
+
+  private parseLegacyCombinedFolderColorOverrides(value: unknown): FolderColorRule[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const rules: FolderColorRule[] = [];
+    for (const item of value) {
+      if (typeof item !== "object" || item === null) {
+        continue;
+      }
+
+      const raw = item as Record<string, unknown>;
+      if (typeof raw.folderName !== "string" || typeof raw.color !== "string") {
+        continue;
+      }
+
+      rules.push({
+        type: "combined",
+        target: raw.folderName,
+        color: parseHexGraphColor(raw.color) ? raw.color : DEFAULT_FOLDER_RULE_COLOR,
+        inheritToChildren: true,
+        colorLinks: true
+      });
+    }
+
+    return rules;
   }
 
   private parseFolder2GraphSettings(value: unknown): Folder2GraphSettings {
@@ -515,6 +1000,76 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
     return [];
   }
+
+  getFolderColorSuggestions(query: string): FolderColorSuggestion[] {
+    const suggestions: FolderColorSuggestion[] = [];
+    const basenameGroups = new Map<string, TFolder[]>();
+
+    const folders = this.app.vault
+      .getAllLoadedFiles()
+      .filter((file): file is TFolder => file instanceof TFolder && !file.isRoot());
+
+    for (const folder of folders) {
+      const group = basenameGroups.get(folder.name) ?? [];
+      group.push(folder);
+      basenameGroups.set(folder.name, group);
+
+      suggestions.push({
+        type: "folder",
+        target: folder.path,
+        label: folder.path,
+        detail: "Folder"
+      });
+    }
+
+    for (const [basename, folders] of basenameGroups.entries()) {
+      if (folders.length < 2) {
+        continue;
+      }
+
+      suggestions.unshift({
+        type: "combined",
+        target: basename,
+        label: `${basename} (combined)`,
+        detail: `${folders.length} folders named ${basename}`
+      });
+    }
+
+    const search = query.trim();
+    if (!search) {
+      return suggestions.slice(0, 100);
+    }
+
+    const fuzzySearch = prepareFuzzySearch(search);
+    return suggestions
+      .filter((suggestion) => fuzzySearch(suggestion.label) || fuzzySearch(suggestion.target))
+      .slice(0, 100);
+  }
+}
+
+class FolderColorSuggest extends AbstractInputSuggest<FolderColorSuggestion> {
+  constructor(
+    private plugin: FolderAndGraphsPlusPlugin,
+    inputEl: HTMLInputElement,
+    private onChooseFolderColorSuggestion: (suggestion: FolderColorSuggestion) => Promise<void>
+  ) {
+    super(plugin.app, inputEl);
+  }
+
+  protected getSuggestions(query: string): FolderColorSuggestion[] {
+    return this.plugin.getFolderColorSuggestions(query);
+  }
+
+  renderSuggestion(value: FolderColorSuggestion, el: HTMLElement): void {
+    el.createDiv({ text: value.label });
+    el.createDiv({ text: value.detail, cls: "suggestion-note" });
+  }
+
+  selectSuggestion(value: FolderColorSuggestion, evt: MouseEvent | KeyboardEvent): void {
+    this.setValue(value.target);
+    void this.onChooseFolderColorSuggestion(value);
+    this.close();
+  }
 }
 
 class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
@@ -539,7 +1094,122 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
             this.plugin.settings.combineSameNameFolders = value;
             await this.plugin.saveSettings();
             this.plugin.refreshGraphsAfterSettingsChange();
+            this.display();
           });
       });
+
+    new Setting(containerEl).setName("Folder colours").setHeading();
+
+    for (const [index, rule] of this.plugin.settings.folderColorRules.entries()) {
+      const setting = new Setting(containerEl)
+        .setName(`Folder colour ${index + 1}`)
+        .setDesc(rule.type === "combined" ? "Combined same-name folder" : "Folder and descendants");
+
+      setting.addSearch((search) => {
+        search
+          .setPlaceholder("Search folders")
+          .setValue(rule.target)
+          .onChange(async (value) => {
+            this.plugin.settings.folderColorRules[index] = {
+              ...this.plugin.settings.folderColorRules[index],
+              type: "folder",
+              target: value
+            };
+            await this.saveAndRefresh();
+          });
+
+        new FolderColorSuggest(this.plugin, search.inputEl, async (suggestion) => {
+          this.plugin.settings.folderColorRules[index] = {
+            ...this.plugin.settings.folderColorRules[index],
+            type: suggestion.type,
+            target: suggestion.target
+          };
+          await this.saveAndRefresh();
+          this.display();
+        });
+      });
+
+      setting.addColorPicker((colorPicker) => {
+        colorPicker
+          .setValue(rule.color)
+          .onChange(async (value) => {
+            this.plugin.settings.folderColorRules[index] = {
+              ...this.plugin.settings.folderColorRules[index],
+              color: value
+            };
+            await this.saveAndRefresh();
+          });
+      });
+
+      this.addToggleTag(setting, "Children");
+      setting.addToggle((toggle) => {
+        toggle
+          .setTooltip("Notes of child folders have parent colour")
+          .setValue(rule.inheritToChildren)
+          .onChange(async (value) => {
+            this.plugin.settings.folderColorRules[index] = {
+              ...this.plugin.settings.folderColorRules[index],
+              inheritToChildren: value
+            };
+            await this.saveAndRefresh();
+          });
+      });
+
+      this.addToggleTag(setting, "Lines");
+      setting.addToggle((toggle) => {
+        toggle
+          .setTooltip("Colour graph lines that touch this folder colour")
+          .setValue(rule.colorLinks)
+          .onChange(async (value) => {
+            this.plugin.settings.folderColorRules[index] = {
+              ...this.plugin.settings.folderColorRules[index],
+              colorLinks: value
+            };
+            await this.saveAndRefresh();
+          });
+      });
+
+      setting.addButton((button) => {
+        button
+          .setIcon("trash")
+          .setTooltip("Remove")
+          .onClick(async () => {
+            this.plugin.settings.folderColorRules.splice(index, 1);
+            await this.saveAndRefresh();
+            this.display();
+          });
+      });
+    }
+
+    new Setting(containerEl)
+      .setName("Add folder colour")
+      .addButton((button) => {
+        button
+          .setIcon("plus")
+          .setTooltip("Add")
+          .onClick(async () => {
+            this.plugin.settings.folderColorRules.push({
+              type: "folder",
+              target: "",
+              color: DEFAULT_FOLDER_RULE_COLOR,
+              inheritToChildren: true,
+              colorLinks: true
+            });
+            await this.saveAndRefresh();
+            this.display();
+          });
+      });
+  }
+
+  private async saveAndRefresh(): Promise<void> {
+    await this.plugin.saveSettings();
+    this.plugin.refreshGraphsAfterSettingsChange();
+  }
+
+  private addToggleTag(setting: Setting, text: string): void {
+    setting.controlEl.createSpan({
+      text,
+      cls: "folderandgraphs-plus-toggle-tag"
+    });
   }
 }

@@ -67,8 +67,8 @@ jobs:
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           manifest_version="$(node -p "require('./manifest.json').version")"
-          if [ "$tag" != "$manifest_version" ]; then
-            echo "Tag $tag must match manifest version $manifest_version"
+          if [ "$tag" != "$manifest_version" ] && [ "$tag" != "v$manifest_version" ]; then
+            echo "Tag $tag must match manifest version $manifest_version or v$manifest_version"
             exit 1
           fi
           files=(main.js manifest.json)

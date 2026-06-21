@@ -1,6 +1,10 @@
 # Folder and Graphs Plus
 
-An Obsidian helper plugin that colours Folder2Graph folder nodes with matching native Graph View group colours.
+Folder and Graphs Plus is a small extension of Folder2Graph / Folders to Graph.
+
+It keeps the Folder2Graph behaviour of showing folders as nodes in Obsidian's Graph View, then adds one extra layer: folder nodes can use the same colours as your native Obsidian graph groups.
+
+In other words, this plugin is not a replacement for Obsidian Graph View and it does not try to be a new graph system. It is Folder2Graph, plus colour matching.
 
 ## Requirements
 

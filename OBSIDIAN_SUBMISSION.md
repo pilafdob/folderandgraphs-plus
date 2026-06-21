@@ -25,10 +25,10 @@ https://github.com/pilafdob/folderandgraphs-plus
 
 ## Published release
 
-The required GitHub release is already public:
+The required GitHub release must be public before submitting:
 
 ```text
-https://github.com/pilafdob/folderandgraphs-plus/releases/tag/0.3.0
+https://github.com/pilafdob/folderandgraphs-plus/releases/tag/v1.0.0
 ```
 
 Release assets:
@@ -38,7 +38,7 @@ Release assets:
 
 ## Directory metadata
 
-The directory reads `manifest.json` from the default branch and downloads release assets from the matching GitHub release tag.
+The directory reads `manifest.json` from the default branch and downloads release assets from the release tag. For this release, the GitHub tag is `v1.0.0` and the Obsidian manifest version remains `1.0.0`.
 
 Current manifest:
 
@@ -46,7 +46,7 @@ Current manifest:
 {
   "id": "folderandgraphs-plus",
   "name": "Folder and Graphs Plus",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "minAppVersion": "1.4.16",
   "description": "Colours Folder2Graph folder nodes with matching native Graph View group colours.",
   "author": "pilafdob",

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1
+## 1.0.0
 
 - Address Obsidian community review warnings by replacing the source `require()` import with a typed ES import.
 - Remove local `this` aliasing and tighten loaded settings validation.
