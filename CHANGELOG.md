@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2
+
+- Fix split line colouring for bidirectional graph links by resolving endpoint positions from graph nodes when needed.
+
 ## 1.0.1
 
 - Replace `Vault#getFolderByPath` with a minAppVersion-compatible folder lookup.
