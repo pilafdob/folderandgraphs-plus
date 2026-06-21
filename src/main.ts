@@ -14,12 +14,14 @@ import {
   type FolderColorRuleType,
   type GraphColor,
   type GraphColorGroup,
-  MAX_FOLDER_RULE_RINGS,
+  DEFAULT_FOLDER_GLOW_STRENGTH,
+  MAX_FOLDER_GLOW_STRENGTH,
+  MIN_FOLDER_GLOW_STRENGTH,
   folderPathFromNodeId,
   getFolderVisualForPaths,
   getGraphLinkColorDecision,
   getGraphNodePluginColors,
-  normalizeFolderRuleRings,
+  normalizeFolderGlowStrength,
   parseHexGraphColor
 } from "./graphGroups";
 import Folder2GraphPlugin from "./vendor/folders2graph/main";
@@ -77,8 +79,8 @@ type PatchableGraphNode = {
   radius?: unknown;
   r?: unknown;
   alpha?: unknown;
-  __folderAndGraphsPlusRingBaseGeometry?: { x: number; y: number; radius: number };
-  __folderAndGraphsPlusRingSignature?: string;
+  __folderAndGraphsPlusGlowBaseGeometry?: { x: number; y: number; radius: number };
+  __folderAndGraphsPlusGlowSignature?: string;
   __folderAndGraphsPlusOriginalGetFillColor?: () => GraphColor;
   __folderAndGraphsPlusOriginalNodeRenderMethods?: Partial<Record<GraphRenderMethodName, GraphNodeRenderMethod>>;
   getFillColor?: () => GraphColor;
@@ -142,7 +144,9 @@ type PixiCircleLike = PixiLineLike & {
   r?: number;
   drawCircle?: (x: number, y: number, radius: number) => void;
   arc?: (x: number, y: number, radius: number, startAngle: number, endAngle: number) => void;
+  beginFill?: (color?: number, alpha?: number) => void;
   closePath?: () => void;
+  endFill?: () => void;
   getLocalBounds?: () => { x: number; y: number; width: number; height: number };
 };
 
@@ -311,7 +315,9 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     return this.getVisualForGraphNode(node)?.color ?? null;
   }
 
-  private getVisualForGraphNode(node: PatchableGraphNode): { color: GraphColor; rings: number } | null {
+  private getVisualForGraphNode(
+    node: PatchableGraphNode
+  ): { color: GraphColor; glow: boolean; glowStrength: number } | null {
     const folderPaths = this.getFolderPathsForGraphNode(node);
     if (folderPaths.length === 0) {
       return null;
@@ -331,7 +337,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       return;
     }
 
-    const drawNodeRings = this.drawNodeRings.bind(this);
+    const drawNodeGlow = this.drawNodeGlow.bind(this);
     for (const methodName of ["render", "draw", "updateGraphics"] as const) {
       const original = prototype[methodName];
       if (typeof original !== "function") {
@@ -344,7 +350,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         ...args: unknown[]
       ): unknown {
         const result = original.apply(this, args);
-        drawNodeRings(this);
+        drawNodeGlow(this);
         return result;
       };
       break;
@@ -372,59 +378,56 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     delete prototype.__folderAndGraphsPlusOriginalNodeRenderMethods;
   }
 
-  private drawNodeRings(node: PatchableGraphNode): void {
+  private drawNodeGlow(node: PatchableGraphNode): void {
     const visual = this.getVisualForGraphNode(node);
-    const rings = normalizeFolderRuleRings(visual?.rings);
-    if (!visual || rings < 1) {
-      node.__folderAndGraphsPlusRingSignature = undefined;
+    if (!visual?.glow) {
+      node.__folderAndGraphsPlusGlowSignature = undefined;
       return;
     }
 
-    const target = this.getNodeRingTargets(node).find((candidate) => (
-      typeof candidate.lineStyle === "function" &&
-      (typeof candidate.drawCircle === "function" || typeof candidate.arc === "function")
+    const target = this.getNodeGlowTargets(node).find((candidate) => (
+      (typeof candidate.beginFill === "function" || typeof candidate.lineStyle === "function") &&
+      typeof candidate.drawCircle === "function"
     ));
     if (!target) {
       return;
     }
 
-    const geometry = node.__folderAndGraphsPlusRingBaseGeometry ?? this.getNodeCircleGeometry(node, target);
+    const geometry = node.__folderAndGraphsPlusGlowBaseGeometry ?? this.getNodeCircleGeometry(node, target);
     if (!geometry) {
       return;
     }
-    node.__folderAndGraphsPlusRingBaseGeometry = geometry;
+    node.__folderAndGraphsPlusGlowBaseGeometry = geometry;
 
-    const alpha = visual.color.a ?? (typeof target.alpha === "number" ? target.alpha : 0.9);
-    const lineWidth = 1.5;
-    const gap = 3;
+    const strength = normalizeFolderGlowStrength(visual.glowStrength);
+    const glowRadius = geometry.radius + 4 + (strength * 2);
+    const alpha = Math.min(0.35, 0.06 + (strength * 0.025));
     const signature = [
-      rings,
+      strength,
       visual.color.rgb,
       alpha,
       geometry.x,
       geometry.y,
-      geometry.radius
+      geometry.radius,
+      glowRadius
     ].join(":");
-    if (node.__folderAndGraphsPlusRingSignature === signature) {
+    if (node.__folderAndGraphsPlusGlowSignature === signature) {
       return;
     }
 
-    for (let index = 1; index <= rings; index += 1) {
-      const radius = geometry.radius + (gap * index);
-      target.lineStyle?.(lineWidth, visual.color.rgb, alpha);
-      if (typeof target.drawCircle === "function") {
-        target.drawCircle(geometry.x, geometry.y, radius);
-      } else {
-        target.moveTo?.(geometry.x + radius, geometry.y);
-        target.arc?.(geometry.x, geometry.y, radius, 0, Math.PI * 2);
-        target.closePath?.();
-      }
+    for (let layer = 3; layer >= 1; layer -= 1) {
+      const layerRadius = geometry.radius + 2 + ((glowRadius - geometry.radius) * (layer / 3));
+      const layerAlpha = alpha / (4 - layer);
+      target.lineStyle?.(0, visual.color.rgb, 0);
+      target.beginFill?.(visual.color.rgb, layerAlpha);
+      target.drawCircle?.(geometry.x, geometry.y, layerRadius);
+      target.endFill?.();
     }
 
-    node.__folderAndGraphsPlusRingSignature = signature;
+    node.__folderAndGraphsPlusGlowSignature = signature;
   }
 
-  private getNodeRingTargets(node: PatchableGraphNode): PixiCircleLike[] {
+  private getNodeGlowTargets(node: PatchableGraphNode): PixiCircleLike[] {
     return [node.circle, node.graphics, node]
       .filter((target): target is PixiCircleLike => typeof target === "object" && target !== null);
   }
