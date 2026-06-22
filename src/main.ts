@@ -9,21 +9,30 @@ import {
   type WorkspaceLeaf
 } from "obsidian";
 import {
-  type FolderColorRule,
   type FolderColorChildRule,
+  type FolderColorRule,
   type FolderColorRuleType,
   type GraphColor,
   type GraphColorGroup,
-  DEFAULT_FOLDER_GLOW_STRENGTH,
-  MAX_FOLDER_GLOW_STRENGTH,
-  MIN_FOLDER_GLOW_STRENGTH,
   folderPathFromNodeId,
   getFolderVisualForPaths,
   getGraphLinkColorDecision,
   getGraphNodePluginColors,
-  normalizeFolderGlowStrength,
   parseHexGraphColor
 } from "./graphGroups";
+import {
+  DEFAULT_GRAPH_FILTER_SETTINGS,
+  applyGraphFilters,
+  normalizeAttachmentExtensions,
+  normalizeGraphFilterSettings,
+  type GraphFilterAttachmentMode,
+  type GraphFilterSettings
+} from "./graphFilters";
+import {
+  installGraphDataPatch,
+  restoreGraphDataPatch,
+  type GraphDataPatch
+} from "./graphDataPatch";
 import Folder2GraphPlugin from "./vendor/folders2graph/main";
 
 const FOLDER2GRAPH_NODE_TYPE = "f2g_node";
@@ -31,14 +40,30 @@ const DEFAULT_FOLDER_RULE_COLOR = "#5c8af5";
 
 type FolderAndGraphsPlusSettings = {
   combineSameNameFolders: boolean;
+  graphFilters: GraphFilterSettings;
   folderColorRules: FolderColorRule[];
   folder2graph?: Record<string, unknown>;
 };
 
 const DEFAULT_SETTINGS: FolderAndGraphsPlusSettings = {
   combineSameNameFolders: false,
+  graphFilters: {
+    ...DEFAULT_GRAPH_FILTER_SETTINGS,
+    attachmentExtensions: [...DEFAULT_GRAPH_FILTER_SETTINGS.attachmentExtensions]
+  },
   folderColorRules: []
 };
+
+function createDefaultSettings(): FolderAndGraphsPlusSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    graphFilters: {
+      ...DEFAULT_SETTINGS.graphFilters,
+      attachmentExtensions: [...DEFAULT_SETTINGS.graphFilters.attachmentExtensions]
+    },
+    folderColorRules: [...DEFAULT_SETTINGS.folderColorRules]
+  };
+}
 
 type GraphRenderer = {
   nodes?: unknown[];
@@ -51,47 +76,36 @@ type GraphRenderer = {
   changed?: () => void;
   setData?: (data: GraphData) => unknown;
   originalSetData?: (data: GraphData) => unknown;
-  __folderAndGraphsPlusDataPatch?: {
-    key: "setData" | "originalSetData";
-    original: (data: GraphData) => unknown;
-    wrapper: (data: GraphData) => unknown;
-  };
 };
 
 type GraphLeaf = WorkspaceLeaf & {
   view?: {
     getViewType?: () => string;
+    containerEl?: HTMLElement;
     renderer?: GraphRenderer;
     dataEngine?: {
       getOptions?: () => unknown;
       setOptions?: (options: unknown) => void;
+      updateSearch?: () => void;
+      requestUpdateSearch?: {
+        run?: () => void;
+      };
     };
     unload?: () => void;
     load?: () => void;
   };
 };
 
+type GraphLeafController = {
+  dataPatch?: GraphDataPatch<GraphData>;
+};
+
 type PatchableGraphNode = {
   id?: unknown;
   type?: unknown;
-  circle?: unknown;
-  graphics?: unknown;
-  radius?: unknown;
-  r?: unknown;
-  alpha?: unknown;
-  __folderAndGraphsPlusGlowBaseGeometry?: { x: number; y: number; radius: number };
-  __folderAndGraphsPlusGlowSignature?: string;
   __folderAndGraphsPlusOriginalGetFillColor?: () => GraphColor;
-  __folderAndGraphsPlusOriginalNodeRenderMethods?: Partial<Record<GraphRenderMethodName, GraphNodeRenderMethod>>;
   getFillColor?: () => GraphColor;
-  render?: GraphNodeRenderMethod;
-  draw?: GraphNodeRenderMethod;
-  updateGraphics?: GraphNodeRenderMethod;
 };
-
-type GraphRenderMethodName = "render" | "draw" | "updateGraphics";
-
-type GraphNodeRenderMethod = (this: PatchableGraphNode, ...args: unknown[]) => unknown;
 
 type PatchableGraphLink = {
   source?: unknown;
@@ -118,15 +132,22 @@ type PatchableGraphLink = {
   targetX?: unknown;
   targetY?: unknown;
   renderer?: unknown;
-  __folderAndGraphsPlusOriginalLinkRenderMethods?: Partial<Record<GraphRenderMethodName, GraphLinkRenderMethod>>;
+  __folderAndGraphsPlusOriginalLinkRenderMethods?: Partial<Record<GraphLinkRenderMethodName, GraphLinkRenderMethod>>;
   render?: GraphLinkRenderMethod;
   draw?: GraphLinkRenderMethod;
   updateGraphics?: GraphLinkRenderMethod;
 };
 
+type GraphLinkRenderMethodName = "render" | "draw" | "updateGraphics";
+
 type GraphLinkRenderMethod = (this: PatchableGraphLink, ...args: unknown[]) => unknown;
 
 type PixiLineLike = {
+  parent?: unknown;
+  pivot?: unknown;
+  position?: unknown;
+  rotation?: unknown;
+  scale?: unknown;
   tint?: number;
   alpha?: number;
   lineWidth?: number;
@@ -135,19 +156,6 @@ type PixiLineLike = {
   moveTo?: (x: number, y: number) => void;
   lineTo?: (x: number, y: number) => void;
   lineStyle?: (width?: number, color?: number, alpha?: number) => void;
-};
-
-type PixiCircleLike = PixiLineLike & {
-  x?: number;
-  y?: number;
-  radius?: number;
-  r?: number;
-  drawCircle?: (x: number, y: number, radius: number) => void;
-  arc?: (x: number, y: number, radius: number, startAngle: number, endAngle: number) => void;
-  beginFill?: (color?: number, alpha?: number) => void;
-  closePath?: () => void;
-  endFill?: () => void;
-  getLocalBounds?: () => { x: number; y: number; width: number; height: number };
 };
 
 type GraphPoint = {
@@ -185,13 +193,14 @@ type FolderColorSuggestion = {
 };
 
 export default class FolderAndGraphsPlusPlugin extends Plugin {
-  settings: FolderAndGraphsPlusSettings = { ...DEFAULT_SETTINGS };
+  settings: FolderAndGraphsPlusSettings = createDefaultSettings();
   private bundledFolder2Graph: Plugin | null = null;
   private patchedPrototype: PatchableGraphNode | null = null;
   private originalGetFillColor: (() => GraphColor) | null = null;
   private patchedGetFillColor: (() => GraphColor) | null = null;
   private patchedLinkPrototypes = new Set<PatchableGraphLink>();
   private rendererByLinkPrototype = new WeakMap<PatchableGraphLink, GraphRenderer>();
+  private graphLeafControllers = new WeakMap<GraphLeaf, GraphLeafController>();
   private colorGroups: GraphColorGroup[] = [];
   private combinedFolderPathsByNodeId = new Map<string, string[]>();
   private nodePluginColorsById = new Map<string, GraphColor>();
@@ -216,12 +225,12 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
     this.registerInterval(
       window.setInterval(() => {
-        void this.refreshColorGroups().then(() => this.requestGraphRedraw());
+        void this.refreshColorGroups().then(() => this.refreshGraphLeaves(false));
       }, 2000)
     );
 
     this.refreshGraphLeaves();
-    if (this.settings.combineSameNameFolders) {
+    if (this.settings.combineSameNameFolders || this.isGraphFilterActive(this.settings.graphFilters)) {
       this.refreshGraphsAfterSettingsChange();
     }
   }
@@ -232,17 +241,16 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       delete this.patchedPrototype.__folderAndGraphsPlusOriginalGetFillColor;
     }
 
-    this.restoreGraphNodeRenderMethods();
     this.restoreGraphLinkRenderMethods();
     this.patchedPrototype = null;
     this.originalGetFillColor = null;
     this.patchedGetFillColor = null;
-    this.unpatchRendererData();
+    this.unpatchGraphLeafControllers();
     void this.unloadBundledFolder2Graph();
     this.requestGraphRedraw();
   }
 
-  private refreshGraphLeaves(): void {
+  private refreshGraphLeaves(requestRedraw = true): void {
     void this.refreshColorGroups();
 
     for (const leaf of this.getGraphLeaves()) {
@@ -251,14 +259,16 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         continue;
       }
 
-      this.patchRendererData(renderer);
+      this.ensureGraphLeafController(leaf);
 
       if (Array.isArray(renderer.nodes) && renderer.nodes.length > 0) {
         this.patchNodePrototype(renderer.nodes[0]);
       }
 
       this.patchGraphLinkRendering(renderer);
-      renderer.changed?.();
+      if (requestRedraw) {
+        renderer.changed?.();
+      }
     }
   }
 
@@ -274,6 +284,13 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       .filter((leaf): leaf is GraphLeaf => leaf?.view?.getViewType?.() === "graph");
   }
 
+  private ensureGraphLeafController(leaf: GraphLeaf): void {
+    const controller = this.graphLeafControllers.get(leaf) ?? {};
+    this.graphLeafControllers.set(leaf, controller);
+    this.ensureGraphDataPatch(leaf, controller);
+    this.renderNativeGraphFilterControls(leaf);
+  }
+
   private patchNodePrototype(node: unknown): void {
     const prototype = Object.getPrototypeOf(node) as PatchableGraphNode | null;
     if (!prototype || typeof prototype.getFillColor !== "function") {
@@ -281,14 +298,12 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     }
 
     if (this.patchedPrototype === prototype && prototype.getFillColor === this.patchedGetFillColor) {
-      this.patchGraphNodeRenderMethods(prototype);
       return;
     }
 
     if (this.patchedPrototype && this.originalGetFillColor && this.patchedPrototype !== prototype) {
       this.patchedPrototype.getFillColor = this.originalGetFillColor;
       delete this.patchedPrototype.__folderAndGraphsPlusOriginalGetFillColor;
-      this.restoreGraphNodeRenderMethods();
     }
 
     const original = prototype.getFillColor;
@@ -308,7 +323,6 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
     this.patchedGetFillColor = patchedGetFillColor;
     prototype.getFillColor = patchedGetFillColor;
-    this.patchGraphNodeRenderMethods(prototype);
   }
 
   private getColorForGraphNode(node: PatchableGraphNode): GraphColor | null {
@@ -317,7 +331,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
   private getVisualForGraphNode(
     node: PatchableGraphNode
-  ): { color: GraphColor; glow: boolean; glowStrength: number } | null {
+  ): { color: GraphColor; colorLinks: boolean } | null {
     const folderPaths = this.getFolderPathsForGraphNode(node);
     if (folderPaths.length === 0) {
       return null;
@@ -329,134 +343,6 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       this.settings.folderColorRules,
       this.isFolderGraphNode(node) ? "folderNode" : "fileNode"
     );
-  }
-
-  private patchGraphNodeRenderMethods(prototype: PatchableGraphNode): void {
-    const originalMethods = prototype.__folderAndGraphsPlusOriginalNodeRenderMethods ?? {};
-    if (Object.keys(originalMethods).length > 0) {
-      return;
-    }
-
-    const drawNodeGlow = this.drawNodeGlow.bind(this);
-    for (const methodName of ["render", "draw", "updateGraphics"] as const) {
-      const original = prototype[methodName];
-      if (typeof original !== "function") {
-        continue;
-      }
-
-      originalMethods[methodName] = original;
-      prototype[methodName] = function folderAndGraphsPlusNodeRenderPatch(
-        this: PatchableGraphNode,
-        ...args: unknown[]
-      ): unknown {
-        const result = original.apply(this, args);
-        drawNodeGlow(this);
-        return result;
-      };
-      break;
-    }
-
-    if (Object.keys(originalMethods).length > 0) {
-      prototype.__folderAndGraphsPlusOriginalNodeRenderMethods = originalMethods;
-    }
-  }
-
-  private restoreGraphNodeRenderMethods(): void {
-    const prototype = this.patchedPrototype;
-    const originalMethods = prototype?.__folderAndGraphsPlusOriginalNodeRenderMethods;
-    if (!prototype || !originalMethods) {
-      return;
-    }
-
-    for (const [methodName, original] of Object.entries(originalMethods) as [
-      GraphRenderMethodName,
-      GraphNodeRenderMethod
-    ][]) {
-      prototype[methodName] = original;
-    }
-
-    delete prototype.__folderAndGraphsPlusOriginalNodeRenderMethods;
-  }
-
-  private drawNodeGlow(node: PatchableGraphNode): void {
-    const visual = this.getVisualForGraphNode(node);
-    if (!visual?.glow) {
-      node.__folderAndGraphsPlusGlowSignature = undefined;
-      return;
-    }
-
-    const target = this.getNodeGlowTargets(node).find((candidate) => (
-      (typeof candidate.beginFill === "function" || typeof candidate.lineStyle === "function") &&
-      typeof candidate.drawCircle === "function"
-    ));
-    if (!target) {
-      return;
-    }
-
-    const geometry = node.__folderAndGraphsPlusGlowBaseGeometry ?? this.getNodeCircleGeometry(node, target);
-    if (!geometry) {
-      return;
-    }
-    node.__folderAndGraphsPlusGlowBaseGeometry = geometry;
-
-    const strength = normalizeFolderGlowStrength(visual.glowStrength);
-    const glowSpread = 80;
-    const alpha = 0.025 + (strength * 0.0125);
-    const signature = [
-      strength,
-      visual.color.rgb,
-      alpha,
-      geometry.x,
-      geometry.y,
-      geometry.radius,
-      glowSpread
-    ].join(":");
-    if (node.__folderAndGraphsPlusGlowSignature === signature) {
-      return;
-    }
-
-    target.lineStyle?.(glowSpread, visual.color.rgb, alpha * 0.45);
-    target.drawCircle?.(geometry.x, geometry.y, geometry.radius + 1 + (glowSpread / 2));
-    target.lineStyle?.(glowSpread * 0.45, visual.color.rgb, alpha);
-    target.drawCircle?.(geometry.x, geometry.y, geometry.radius + 1 + (glowSpread * 0.225));
-    target.lineStyle?.(0, visual.color.rgb, 0);
-
-    node.__folderAndGraphsPlusGlowSignature = signature;
-  }
-
-  private getNodeGlowTargets(node: PatchableGraphNode): PixiCircleLike[] {
-    return [node.circle, node.graphics, node]
-      .filter((target): target is PixiCircleLike => typeof target === "object" && target !== null);
-  }
-
-  private getNodeCircleGeometry(node: PatchableGraphNode, target: PixiCircleLike): { x: number; y: number; radius: number } | null {
-    const explicitRadius = this.asNumber(node.radius) ?? this.asNumber(node.r) ?? this.asNumber(target.radius) ?? this.asNumber(target.r);
-    if (explicitRadius && explicitRadius > 0) {
-      return {
-        x: this.asNumber(target.x) ?? 0,
-        y: this.asNumber(target.y) ?? 0,
-        radius: explicitRadius
-      };
-    }
-
-    const bounds = target.getLocalBounds?.();
-    if (
-      bounds &&
-      Number.isFinite(bounds.x) &&
-      Number.isFinite(bounds.y) &&
-      Number.isFinite(bounds.width) &&
-      Number.isFinite(bounds.height) &&
-      bounds.width > 0 &&
-      bounds.height > 0
-    ) {
-      return {
-        x: bounds.x + (bounds.width / 2),
-        y: bounds.y + (bounds.height / 2),
-        radius: Math.min(bounds.width, bounds.height) / 2
-      };
-    }
-
-    return null;
   }
 
   private asNumber(value: unknown): number | null {
@@ -513,8 +399,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         continue;
       }
 
-      for (const [methodName, original] of Object.entries(originalMethods) as [
-        GraphRenderMethodName,
+    for (const [methodName, original] of Object.entries(originalMethods) as [
+        GraphLinkRenderMethodName,
         GraphLinkRenderMethod
       ][]) {
         prototype[methodName] = original;
@@ -902,51 +788,233 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     );
   }
 
-  private patchRendererData(renderer: GraphRenderer): void {
-    if (renderer.__folderAndGraphsPlusDataPatch) {
-      return;
-    }
+  private ensureGraphDataPatch(leaf: GraphLeaf, controller: GraphLeafController): void {
+    const renderer = leaf.view?.renderer;
+    controller.dataPatch = installGraphDataPatch(controller.dataPatch, renderer, (data) => {
+      const combinedData = this.settings.combineSameNameFolders
+        ? this.mergeSameNameFolderNodes(data)
+        : this.rememberSeparateFolderPaths(data);
+      const nextData = this.filterGraphData(combinedData);
 
-    const key = typeof renderer.originalSetData === "function" ? "originalSetData" : "setData";
-    const original = renderer[key];
-
-    if (typeof original !== "function") {
-      return;
-    }
-
-    const shouldCombineSameNameFolders = () => this.settings.combineSameNameFolders;
-    const mergeSameNameFolderNodes = this.mergeSameNameFolderNodes.bind(this);
-    const rememberSeparateFolderPaths = this.rememberSeparateFolderPaths.bind(this);
-    const rememberNodePluginColors = this.rememberNodePluginColors.bind(this);
-    const wrapper = (data: GraphData): unknown => {
-      const nextData = shouldCombineSameNameFolders()
-        ? mergeSameNameFolderNodes(data)
-        : rememberSeparateFolderPaths(data);
-
-      rememberNodePluginColors(nextData);
-      return original.call(renderer, nextData);
-    };
-
-    renderer.__folderAndGraphsPlusDataPatch = { key, original, wrapper };
-    renderer[key] = wrapper;
+      this.rememberNodePluginColors(nextData);
+      return nextData;
+    });
   }
 
-  private unpatchRendererData(): void {
+  private unpatchGraphLeafControllers(): void {
     for (const leaf of this.getGraphLeaves()) {
-      const renderer = leaf.view?.renderer;
-      const patch = renderer?.__folderAndGraphsPlusDataPatch;
-      if (!renderer || !patch) {
-        continue;
+      const controller = this.graphLeafControllers.get(leaf);
+      if (controller) {
+        restoreGraphDataPatch(controller.dataPatch);
+        controller.dataPatch = undefined;
       }
-
-      if (renderer[patch.key] === patch.wrapper) {
-        renderer[patch.key] = patch.original;
-      } else if (renderer.originalSetData === patch.wrapper) {
-        renderer.originalSetData = patch.original;
-      }
-
-      delete renderer.__folderAndGraphsPlusDataPatch;
     }
+  }
+
+  private renderNativeGraphFilterControls(leaf: GraphLeaf, force = false): void {
+    const panelEl = this.findGraphControlsPanel(leaf);
+    if (!panelEl) {
+      return;
+    }
+
+    const existing = panelEl.querySelector(".folderandgraphs-plus-native-filters");
+    if (existing && !force) {
+      return;
+    }
+    existing?.remove();
+
+    const attachmentRow = this.findGraphFilterRow(panelEl, "Attachments");
+    if (!attachmentRow?.parentElement) {
+      return;
+    }
+
+    const containerEl = document.createElement("div");
+    containerEl.className = "folderandgraphs-plus-native-filters";
+    containerEl.setAttr("data-folderandgraphs-plus-native-filters", "true");
+
+    this.renderAttachmentModeControl(containerEl);
+    if (this.settings.graphFilters.attachmentMode === "custom") {
+      this.renderCustomExtensionsControl(containerEl);
+    }
+    this.renderBooleanGraphFilterControl(containerEl, "Folders", "showFolders");
+    this.renderBooleanGraphFilterControl(containerEl, "Canvases", "showCanvases");
+
+    attachmentRow.insertAdjacentElement("afterend", containerEl);
+  }
+
+  private findGraphControlsPanel(leaf: GraphLeaf): HTMLElement | null {
+    const roots = [
+      leaf.view?.containerEl,
+      (leaf as { containerEl?: HTMLElement }).containerEl,
+      document.body
+    ].filter((root): root is HTMLElement => root instanceof HTMLElement);
+    const candidates = roots
+      .flatMap((root) => [root, ...Array.from(root.querySelectorAll<HTMLElement>("div"))])
+      .filter((element) => {
+        const text = element.textContent ?? "";
+        return text.includes("Filters") && text.includes("Attachments") && text.includes("Groups");
+      })
+      .sort((a, b) => (a.textContent?.length ?? 0) - (b.textContent?.length ?? 0));
+
+    return candidates[0] ?? null;
+  }
+
+  private findGraphFilterRow(panelEl: HTMLElement, label: string): HTMLElement | null {
+    const candidates = Array.from(panelEl.querySelectorAll<HTMLElement>("div, label, .setting-item"));
+    const exact = candidates.find((element) => element.textContent?.trim() === label);
+    const row = exact ? this.findGraphFilterRowContainer(exact, panelEl) : null;
+    if (row) {
+      return row;
+    }
+
+    return candidates.find((element) => element.textContent?.trim() === label) ?? null;
+  }
+
+  private findGraphFilterRowContainer(element: HTMLElement, panelEl: HTMLElement): HTMLElement {
+    let current: HTMLElement = element;
+    while (
+      current.parentElement &&
+      current.parentElement !== panelEl &&
+      !this.hasInteractiveGraphFilterControl(current)
+    ) {
+      current = current.parentElement;
+    }
+
+    return current;
+  }
+
+  private hasInteractiveGraphFilterControl(element: HTMLElement): boolean {
+    return Boolean(element.querySelector("input, button, select, .checkbox-container, .checkbox-container input"));
+  }
+
+  private renderAttachmentModeControl(containerEl: HTMLElement): void {
+    const options: { value: GraphFilterAttachmentMode; label: string }[] = [
+      { value: "all", label: "All" },
+      { value: "pdf", label: "PDF only" },
+      { value: "documents", label: "Documents" },
+      { value: "hide-media", label: "Hide media" },
+      { value: "custom", label: "Custom" },
+      { value: "none", label: "None" }
+    ];
+
+    new Setting(containerEl)
+      .setName("Attachment type")
+      .addDropdown((dropdown) => {
+        for (const option of options) {
+          dropdown.addOption(option.value, option.label);
+        }
+
+        dropdown
+          .setValue(this.settings.graphFilters.attachmentMode)
+          .onChange((value) => {
+            void this.updateGraphFilters((settings) => {
+              settings.attachmentMode = this.normalizeAttachmentMode(value);
+            });
+          });
+      });
+  }
+
+  private renderCustomExtensionsControl(containerEl: HTMLElement): void {
+    new Setting(containerEl)
+      .setName("Extensions")
+      .addText((text) => {
+        text
+          .setPlaceholder("pdf, epub, mobi")
+          .setValue(this.settings.graphFilters.attachmentExtensions.join(", "))
+          .onChange((value) => {
+            void this.updateGraphFilters((settings) => {
+              settings.attachmentMode = "custom";
+              settings.attachmentExtensions = normalizeAttachmentExtensions(value);
+            }, false);
+          });
+      });
+  }
+
+  private renderBooleanGraphFilterControl(
+    containerEl: HTMLElement,
+    label: string,
+    key: "showFolders" | "showCanvases"
+  ): void {
+    new Setting(containerEl)
+      .setName(label)
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.settings.graphFilters[key])
+          .onChange((value) => {
+            void this.updateGraphFilters((settings) => {
+              settings[key] = value;
+            });
+          });
+      });
+  }
+
+  private normalizeAttachmentMode(value: string): GraphFilterAttachmentMode {
+    return value === "all" ||
+      value === "pdf" ||
+      value === "documents" ||
+      value === "hide-media" ||
+      value === "custom" ||
+      value === "none"
+      ? value
+      : "all";
+  }
+
+  private async updateGraphFilters(
+    update: (settings: GraphFilterSettings) => void,
+    rerenderControls = true
+  ): Promise<void> {
+    const settings = {
+      ...this.settings.graphFilters,
+      attachmentExtensions: [...this.settings.graphFilters.attachmentExtensions]
+    };
+    update(settings);
+    settings.enabled = this.isGraphFilterActive(settings);
+    this.settings.graphFilters = settings;
+    await this.saveSettings();
+    this.refreshGraphsAfterFilterChange();
+    if (rerenderControls) {
+      for (const leaf of this.getGraphLeaves()) {
+        this.renderNativeGraphFilterControls(leaf, true);
+      }
+    }
+  }
+
+  private isGraphFilterActive(settings: GraphFilterSettings): boolean {
+    return (
+      settings.attachmentMode !== "all" ||
+      !settings.showFolders ||
+      !settings.showCanvases ||
+      settings.hideOrphans ||
+      !settings.showNotes ||
+      !settings.showTags
+    );
+  }
+
+  private refreshGraphsAfterFilterChange(): void {
+    for (const leaf of this.getGraphLeaves()) {
+      this.ensureGraphLeafController(leaf);
+      const dataEngine = leaf.view?.dataEngine;
+      if (typeof dataEngine?.updateSearch === "function") {
+        dataEngine.updateSearch();
+      } else if (typeof dataEngine?.requestUpdateSearch?.run === "function") {
+        dataEngine.requestUpdateSearch.run();
+      } else {
+        this.reloadGraphLeaf(leaf);
+      }
+      leaf.view?.renderer?.changed?.();
+    }
+  }
+
+  private reloadGraphLeaf(leaf: GraphLeaf): void {
+    const view = leaf.view;
+    const options = view?.dataEngine?.getOptions?.();
+    view?.renderer?.changed?.();
+    view?.unload?.();
+    view?.load?.();
+    if (options !== undefined) {
+      view?.dataEngine?.setOptions?.(options);
+    }
+    view?.renderer?.changed?.();
   }
 
   private rememberSeparateFolderPaths(data: GraphData): GraphData {
@@ -960,6 +1028,14 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     }
 
     return data;
+  }
+
+  private filterGraphData(data: GraphData): GraphData {
+    return applyGraphFilters(
+      data,
+      this.settings.graphFilters,
+      (nodeId, node) => this.isFolderNode(nodeId, node)
+    ) as GraphData;
   }
 
   private rememberNodePluginColors(data: GraphData): void {
@@ -1097,7 +1173,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
   private parseSettings(value: unknown): FolderAndGraphsPlusSettings {
     if (typeof value !== "object" || value === null) {
-      return { ...DEFAULT_SETTINGS };
+      return createDefaultSettings();
     }
 
     const raw = value as Record<string, unknown>;
@@ -1106,6 +1182,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         typeof raw.combineSameNameFolders === "boolean"
           ? raw.combineSameNameFolders
           : DEFAULT_SETTINGS.combineSameNameFolders,
+      graphFilters: normalizeGraphFilterSettings(raw.graphFilters),
       folderColorRules: this.parseFolderColorRules(raw.folderColorRules, raw.combinedFolderColorOverrides),
       folder2graph: this.parseFolder2GraphSettings(raw.folder2graph)
     };
@@ -1137,8 +1214,6 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         color: parseHexGraphColor(raw.color) ? raw.color : DEFAULT_FOLDER_RULE_COLOR,
         inheritToChildren: typeof raw.inheritToChildren === "boolean" ? raw.inheritToChildren : true,
         colorLinks: typeof raw.colorLinks === "boolean" ? raw.colorLinks : true,
-        glow: raw.glow === true,
-        glowStrength: normalizeFolderGlowStrength(raw.glowStrength),
         children: this.parseFolderColorChildRules(raw.children)
       });
     }
@@ -1168,8 +1243,6 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         color: parseHexGraphColor(raw.color) ? raw.color : DEFAULT_FOLDER_RULE_COLOR,
         inheritToChildren: true,
         colorLinks: true,
-        glow: false,
-        glowStrength: DEFAULT_FOLDER_GLOW_STRENGTH,
         children: []
       });
     }
@@ -1197,8 +1270,6 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         type: raw.type,
         target: raw.target,
         colorLinks: typeof raw.colorLinks === "boolean" ? raw.colorLinks : true,
-        glow: raw.glow === true,
-        glowStrength: normalizeFolderGlowStrength(raw.glowStrength),
         children: this.parseFolderColorChildRules(raw.children)
       });
     }
@@ -1212,15 +1283,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
   refreshGraphsAfterSettingsChange(): void {
     for (const leaf of this.getGraphLeaves()) {
-      const view = leaf.view;
-      const options = view?.dataEngine?.getOptions?.();
-      view?.renderer?.changed?.();
-      view?.unload?.();
-      view?.load?.();
-      if (options !== undefined) {
-        view?.dataEngine?.setOptions?.(options);
-      }
-      view?.renderer?.changed?.();
+      this.reloadGraphLeaf(leaf);
     }
 
     this.refreshGraphLeaves();
@@ -1382,7 +1445,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Folder colours").setHeading();
 
     for (const [index, rule] of this.plugin.settings.folderColorRules.entries()) {
-      this.renderFolderColorRule(containerEl, rule, this.plugin.settings.folderColorRules, index, 0, false);
+      this.renderFolderColorRule(containerEl, rule, this.plugin.settings.folderColorRules, index);
     }
 
     new Setting(containerEl)
@@ -1398,8 +1461,6 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
               color: DEFAULT_FOLDER_RULE_COLOR,
               inheritToChildren: true,
               colorLinks: true,
-              glow: false,
-              glowStrength: DEFAULT_FOLDER_GLOW_STRENGTH,
               children: []
             });
             await this.saveAndRefresh();
@@ -1413,8 +1474,8 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
     rule: FolderColorRule | FolderColorChildRule,
     siblings: (FolderColorRule | FolderColorChildRule)[],
     index: number,
-    depth: number,
-    isChild: boolean
+    depth = 0,
+    isChild = false
   ): void {
     const rowEl = containerEl.createDiv();
     rowEl.addClass("folderandgraphs-plus-rule-row");
@@ -1481,24 +1542,8 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           rule.colorLinks = value;
           await this.saveAndRefresh();
-      });
-    });
-
-    this.addControlDivider(setting);
-    this.addToggleTag(setting, "Glow");
-    setting.addToggle((toggle) => {
-      toggle
-        .setTooltip("Show a soft glow around this folder node")
-        .setValue(rule.glow)
-        .onChange(async (value) => {
-          rule.glow = value;
-          await this.saveAndRefresh();
-          this.renderSettings();
         });
     });
-
-    this.addControlDivider(setting);
-    this.addGlowStrengthControls(setting, rule);
 
     this.addControlDivider(setting);
     setting.addButton((button) => {
@@ -1510,8 +1555,6 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
             type: "folder",
             target: "",
             colorLinks: true,
-            glow: false,
-            glowStrength: DEFAULT_FOLDER_GLOW_STRENGTH,
             children: []
           });
           await this.saveAndRefresh();
@@ -1556,39 +1599,6 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
     }
 
     return rule.type === "combined" ? "Combined same-name folder" : "Folder and descendants";
-  }
-
-  private addGlowStrengthControls(setting: Setting, rule: FolderColorRule | FolderColorChildRule): void {
-    const strength = normalizeFolderGlowStrength(rule.glowStrength);
-
-    setting.addButton((button) => {
-      button
-        .setIcon("minus")
-        .setTooltip("Decrease glow strength")
-        .setDisabled(!rule.glow || strength <= MIN_FOLDER_GLOW_STRENGTH)
-        .onClick(async () => {
-          rule.glowStrength = normalizeFolderGlowStrength(strength - 1);
-          await this.saveAndRefresh();
-          this.renderSettings();
-        });
-    });
-
-    setting.controlEl.createSpan({
-      text: String(strength),
-      cls: "folderandgraphs-plus-strength-value"
-    });
-
-    setting.addButton((button) => {
-      button
-        .setIcon("plus")
-        .setTooltip("Increase glow strength")
-        .setDisabled(!rule.glow || strength >= MAX_FOLDER_GLOW_STRENGTH)
-        .onClick(async () => {
-          rule.glowStrength = normalizeFolderGlowStrength(strength + 1);
-          await this.saveAndRefresh();
-          this.renderSettings();
-        });
-    });
   }
 
   private async saveAndRefresh(): Promise<void> {

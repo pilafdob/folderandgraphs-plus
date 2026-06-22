@@ -14,8 +14,6 @@ export type FolderColorChildRule = {
   type: FolderColorRuleType;
   target: string;
   colorLinks: boolean;
-  glow: boolean;
-  glowStrength: number;
   children: FolderColorChildRule[];
 };
 
@@ -25,8 +23,6 @@ export type FolderColorRule = {
   color: string;
   inheritToChildren: boolean;
   colorLinks: boolean;
-  glow: boolean;
-  glowStrength: number;
   children: FolderColorChildRule[];
 };
 
@@ -59,8 +55,6 @@ type FolderColorRuleMatch = {
   color: GraphColor;
   colorLinks: boolean;
   depth: number;
-  glow: boolean;
-  glowStrength: number;
   level: number;
   priority: number;
   ruleIndex: number;
@@ -70,13 +64,7 @@ type FolderColorRuleMatch = {
 export type FolderColorVisual = {
   color: GraphColor;
   colorLinks: boolean;
-  glow: boolean;
-  glowStrength: number;
 };
-
-export const DEFAULT_FOLDER_GLOW_STRENGTH = 3;
-export const MIN_FOLDER_GLOW_STRENGTH = 1;
-export const MAX_FOLDER_GLOW_STRENGTH = 10;
 
 export function normalizeVaultPath(path: unknown): string {
   if (typeof path !== "string") return "";
@@ -153,20 +141,6 @@ export function parseHexGraphColor(value: unknown): GraphColor | null {
   };
 }
 
-export function normalizeFolderGlowStrength(value: unknown): number {
-  const numericValue = typeof value === "number"
-    ? value
-    : typeof value === "string"
-      ? Number.parseInt(value, 10)
-      : DEFAULT_FOLDER_GLOW_STRENGTH;
-
-  if (!Number.isFinite(numericValue)) {
-    return DEFAULT_FOLDER_GLOW_STRENGTH;
-  }
-
-  return Math.min(MAX_FOLDER_GLOW_STRENGTH, Math.max(MIN_FOLDER_GLOW_STRENGTH, Math.round(numericValue)));
-}
-
 export function folderBasenameFromPath(folderPath: unknown): string {
   const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
   return parts[parts.length - 1] ?? "";
@@ -190,8 +164,7 @@ export function getFolderColorRuleVisual(
   return match
     ? {
         color: match.color,
-        colorLinks: getWinningColorLinks(matches),
-        ...getWinningGlow(matches, mode)
+        colorLinks: getWinningColorLinks(matches)
       }
     : null;
 }
@@ -205,24 +178,6 @@ function getWinningColorLinks(matches: readonly FolderColorRuleMatch[]): boolean
   }
 
   return true;
-}
-
-function getWinningGlow(
-  matches: readonly FolderColorRuleMatch[],
-  mode: FolderColorMatchMode
-): { glow: boolean; glowStrength: number } {
-  if (mode !== "folderNode") {
-    return { glow: false, glowStrength: DEFAULT_FOLDER_GLOW_STRENGTH };
-  }
-
-  for (let index = matches.length - 1; index >= 0; index -= 1) {
-    const match = matches[index];
-    if (match?.glow) {
-      return { glow: true, glowStrength: match.glowStrength };
-    }
-  }
-
-  return { glow: false, glowStrength: DEFAULT_FOLDER_GLOW_STRENGTH };
 }
 
 function getSortedFolderColorRuleMatches(
@@ -302,8 +257,6 @@ function getFolderColorRuleMatches(
         color,
         colorLinks: rule.colorLinks !== false,
         depth: match.depth,
-        glow: rule.glow === true && match.exact,
-        glowStrength: normalizeFolderGlowStrength(rule.glowStrength),
         level: 0,
         priority: match.priority,
         ruleIndex,
@@ -323,47 +276,6 @@ function getFolderColorRuleMatches(
   }
 
   return matches;
-}
-
-function getFolderRuleMatch(
-  folderPath: string,
-  target: string,
-  inheritToChildren: boolean,
-  mode: FolderColorMatchMode
-): { depth: number; exact: boolean; priority: number; scope: string } | null {
-  const depth = target.split("/").filter(Boolean).length;
-
-  if (folderPath === target) {
-    return { depth, exact: true, priority: 3, scope: target };
-  }
-
-  if (mode === "folderNode" || inheritToChildren) {
-    return folderPathMatchesPathRule(folderPath, target)
-      ? { depth, exact: false, priority: mode === "fileNode" ? 2 : 1, scope: target }
-      : null;
-  }
-
-  return null;
-}
-
-function getCombinedFolderMatch(
-  folderPath: string,
-  target: string,
-  mode: FolderColorMatchMode
-): { depth: number; exact: boolean; priority: number; scope: string } | null {
-  const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    if (parts[index] === target) {
-      return {
-        depth: index + 1,
-        exact: index === parts.length - 1,
-        priority: mode === "fileNode" ? 1 : 2,
-        scope: parts.slice(0, index + 1).join("/")
-      };
-    }
-  }
-
-  return null;
 }
 
 function getFolderRuleChildScope(
@@ -402,16 +314,14 @@ function getNestedFolderColorRuleMatches(
       return;
     }
 
-    const colorLinks = child.colorLinks !== false;
+    const childRuleIndex = parentRuleIndex + ((childIndex + 1) / 1000);
     matches.push({
       color,
-      colorLinks,
+      colorLinks: child.colorLinks !== false,
       depth: match.depth,
-      glow: child.glow === true && match.exact,
-      glowStrength: normalizeFolderGlowStrength(child.glowStrength),
       level,
       priority: match.priority,
-      ruleIndex: parentRuleIndex + ((childIndex + 1) / 1000),
+      ruleIndex: childRuleIndex,
       targetKey: `${level}:${child.type}:${target}`
     });
     matches.push(...getNestedFolderColorRuleMatches(
@@ -421,7 +331,7 @@ function getNestedFolderColorRuleMatches(
       color,
       mode,
       level + 1,
-      parentRuleIndex + ((childIndex + 1) / 1000)
+      childRuleIndex
     ));
   });
 
@@ -477,6 +387,46 @@ function getScopedCombinedFolderMatch(
         depth: index + 1,
         exact: index === parts.length - 1,
         priority: mode === "fileNode" ? 4 : 3,
+        scope: parts.slice(0, index + 1).join("/")
+      };
+    }
+  }
+
+  return null;
+}
+function getFolderRuleMatch(
+  folderPath: string,
+  target: string,
+  inheritToChildren: boolean,
+  mode: FolderColorMatchMode
+): { depth: number; exact: boolean; priority: number; scope: string } | null {
+  const depth = target.split("/").filter(Boolean).length;
+
+  if (folderPath === target) {
+    return { depth, exact: true, priority: 3, scope: target };
+  }
+
+  if (mode === "folderNode" || inheritToChildren) {
+    return folderPathMatchesPathRule(folderPath, target)
+      ? { depth, exact: false, priority: mode === "fileNode" ? 2 : 1, scope: target }
+      : null;
+  }
+
+  return null;
+}
+
+function getCombinedFolderMatch(
+  folderPath: string,
+  target: string,
+  mode: FolderColorMatchMode
+): { depth: number; exact: boolean; priority: number; scope: string } | null {
+  const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    if (parts[index] === target) {
+      return {
+        depth: index + 1,
+        exact: index === parts.length - 1,
+        priority: mode === "fileNode" ? 1 : 2,
         scope: parts.slice(0, index + 1).join("/")
       };
     }
@@ -568,9 +518,7 @@ export function getFolderVisualForPaths(
   return fallbackColor
     ? {
         color: fallbackColor,
-        colorLinks: true,
-        glow: false,
-        glowStrength: DEFAULT_FOLDER_GLOW_STRENGTH
+        colorLinks: true
       }
     : null;
 }

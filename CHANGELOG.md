@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0
+
+- Remove the unstable ring/glow rendering feature from folder colour rules and settings.
+- Add plugin graph filters directly to Obsidian's native Graph View Filters panel under Attachments.
+- Add attachment filter modes for all attachments, PDF only, document files, non-media files, custom extensions, and no attachments.
+- Add native-panel toggles for Folder2Graph folder nodes and canvas files while keeping Obsidian's built-in Tags, Attachments, Existing files only, and Orphans filters in control.
+- Rework Graph View integration around per-leaf renderer controllers that filter after native Obsidian filters and Folder2Graph injection.
+- Add graph filter and renderer patch tests covering attachment filtering, link cleanup, folder/canvas visibility, native attachment filtering, method wrapping, reinstall, and unload restore behavior.
+
 ## 1.8.0
 
 - Keep glow radius fixed at the current strength-10 size and use strength for opacity.
