@@ -400,9 +400,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     node.__folderAndGraphsPlusGlowBaseGeometry = geometry;
 
     const strength = normalizeFolderGlowStrength(visual.glowStrength);
-    const glowSpread = 10 + (strength * 7);
-    const glowLayers = 6;
-    const alpha = 0.12;
+    const glowSpread = 80;
+    const alpha = 0.025 + (strength * 0.0125);
     const signature = [
       strength,
       visual.color.rgb,
@@ -410,21 +409,17 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       geometry.x,
       geometry.y,
       geometry.radius,
-      glowSpread,
-      glowLayers
+      glowSpread
     ].join(":");
     if (node.__folderAndGraphsPlusGlowSignature === signature) {
       return;
     }
 
-    for (let layer = glowLayers; layer >= 1; layer -= 1) {
-      const layerRadius = geometry.radius + 1 + ((glowSpread * layer) / glowLayers);
-      const layerAlpha = alpha / (layer + 1);
-      target.lineStyle?.(0, visual.color.rgb, 0);
-      target.beginFill?.(visual.color.rgb, layerAlpha);
-      target.drawCircle?.(geometry.x, geometry.y, layerRadius);
-      target.endFill?.();
-    }
+    target.lineStyle?.(glowSpread, visual.color.rgb, alpha * 0.45);
+    target.drawCircle?.(geometry.x, geometry.y, geometry.radius + 1 + (glowSpread / 2));
+    target.lineStyle?.(glowSpread * 0.45, visual.color.rgb, alpha);
+    target.drawCircle?.(geometry.x, geometry.y, geometry.radius + 1 + (glowSpread * 0.225));
+    target.lineStyle?.(0, visual.color.rgb, 0);
 
     node.__folderAndGraphsPlusGlowSignature = signature;
   }

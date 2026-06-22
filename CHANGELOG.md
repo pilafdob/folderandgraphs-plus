@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8.0
+
+- Keep glow radius fixed at the current strength-10 size and use strength for opacity.
+- Reduce glow drawing work by replacing stacked filled circles with two stroked glow bands.
+
 ## 1.7.0
 
 - Increase the soft glow spread so high strength values produce a visibly larger halo.
