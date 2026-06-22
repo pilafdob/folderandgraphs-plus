@@ -400,8 +400,9 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     node.__folderAndGraphsPlusGlowBaseGeometry = geometry;
 
     const strength = normalizeFolderGlowStrength(visual.glowStrength);
-    const glowSpread = 5 + (strength * 3.5);
-    const alpha = 0.14;
+    const glowSpread = 10 + (strength * 7);
+    const glowLayers = 6;
+    const alpha = 0.12;
     const signature = [
       strength,
       visual.color.rgb,
@@ -409,14 +410,15 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       geometry.x,
       geometry.y,
       geometry.radius,
-      glowSpread
+      glowSpread,
+      glowLayers
     ].join(":");
     if (node.__folderAndGraphsPlusGlowSignature === signature) {
       return;
     }
 
-    for (let layer = 4; layer >= 1; layer -= 1) {
-      const layerRadius = geometry.radius + 1 + ((glowSpread * layer) / 4);
+    for (let layer = glowLayers; layer >= 1; layer -= 1) {
+      const layerRadius = geometry.radius + 1 + ((glowSpread * layer) / glowLayers);
       const layerAlpha = alpha / (layer + 1);
       target.lineStyle?.(0, visual.color.rgb, 0);
       target.beginFill?.(visual.color.rgb, layerAlpha);

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.0
+
+- Increase the soft glow spread so high strength values produce a visibly larger halo.
+- Draw glow with more layers while keeping opacity steady.
+
 ## 1.6.0
 
 - Make glow strength increase glow spread instead of mostly changing opacity.
