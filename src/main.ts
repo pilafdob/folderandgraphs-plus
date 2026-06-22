@@ -400,8 +400,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     node.__folderAndGraphsPlusGlowBaseGeometry = geometry;
 
     const strength = normalizeFolderGlowStrength(visual.glowStrength);
-    const glowRadius = geometry.radius + 4 + (strength * 2);
-    const alpha = Math.min(0.35, 0.06 + (strength * 0.025));
+    const glowSpread = 5 + (strength * 3.5);
+    const alpha = 0.14;
     const signature = [
       strength,
       visual.color.rgb,
@@ -409,15 +409,15 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       geometry.x,
       geometry.y,
       geometry.radius,
-      glowRadius
+      glowSpread
     ].join(":");
     if (node.__folderAndGraphsPlusGlowSignature === signature) {
       return;
     }
 
-    for (let layer = 3; layer >= 1; layer -= 1) {
-      const layerRadius = geometry.radius + 2 + ((glowRadius - geometry.radius) * (layer / 3));
-      const layerAlpha = alpha / (4 - layer);
+    for (let layer = 4; layer >= 1; layer -= 1) {
+      const layerRadius = geometry.radius + 1 + ((glowSpread * layer) / 4);
+      const layerAlpha = alpha / (layer + 1);
       target.lineStyle?.(0, visual.color.rgb, 0);
       target.beginFill?.(visual.color.rgb, layerAlpha);
       target.drawCircle?.(geometry.x, geometry.y, layerRadius);
@@ -1420,13 +1420,18 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
     isChild: boolean
   ): void {
     const rowEl = containerEl.createDiv();
+    rowEl.addClass("folderandgraphs-plus-rule-row");
     rowEl.style.marginLeft = `${depth * 18}px`;
 
     const setting = new Setting(rowEl)
       .setName(this.getFolderRuleName(rule, index, isChild))
       .setDesc(this.getFolderRuleDescription(rule, isChild));
+    setting.settingEl.addClass("folderandgraphs-plus-rule-setting");
+    setting.controlEl.addClass("folderandgraphs-plus-rule-controls");
 
     setting.addSearch((search) => {
+      search.inputEl.addClass("folderandgraphs-plus-folder-search-input");
+      search.inputEl.parentElement?.addClass("folderandgraphs-plus-folder-search");
       search
         .setPlaceholder(isChild ? "Search child folders" : "Search folders")
         .setValue(rule.target)
@@ -1444,6 +1449,8 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
       });
     });
 
+    this.addControlDivider(setting);
+
     if (!isChild) {
       const topLevelRule = rule as FolderColorRule;
       setting.addColorPicker((colorPicker) => {
@@ -1455,6 +1462,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
           });
       });
 
+      this.addControlDivider(setting);
       this.addToggleTag(setting, "Children");
       setting.addToggle((toggle) => {
         toggle
@@ -1467,6 +1475,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
       });
     }
 
+    this.addControlDivider(setting);
     this.addToggleTag(setting, "Lines");
     setting.addToggle((toggle) => {
       toggle
@@ -1475,9 +1484,10 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           rule.colorLinks = value;
           await this.saveAndRefresh();
-        });
+      });
     });
 
+    this.addControlDivider(setting);
     this.addToggleTag(setting, "Glow");
     setting.addToggle((toggle) => {
       toggle
@@ -1490,8 +1500,10 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
         });
     });
 
+    this.addControlDivider(setting);
     this.addGlowStrengthControls(setting, rule);
 
+    this.addControlDivider(setting);
     setting.addButton((button) => {
       button
         .setIcon("plus")
@@ -1510,6 +1522,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
         });
     });
 
+    this.addControlDivider(setting);
     setting.addButton((button) => {
       button
         .setIcon("trash")
@@ -1565,7 +1578,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
 
     setting.controlEl.createSpan({
       text: String(strength),
-      cls: "folderandgraphs-plus-toggle-tag"
+      cls: "folderandgraphs-plus-strength-value"
     });
 
     setting.addButton((button) => {
@@ -1590,6 +1603,12 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
     setting.controlEl.createSpan({
       text,
       cls: "folderandgraphs-plus-toggle-tag"
+    });
+  }
+
+  private addControlDivider(setting: Setting): void {
+    setting.controlEl.createSpan({
+      cls: "folderandgraphs-plus-control-divider"
     });
   }
 }

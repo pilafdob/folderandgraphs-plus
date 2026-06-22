@@ -1,0 +1,78 @@
+.folderandgraphs-plus-rule-row {
+  width: 100%;
+}
+
+.folderandgraphs-plus-rule-setting {
+  align-items: flex-start;
+}
+
+.folderandgraphs-plus-rule-setting .setting-item-info {
+  flex: 0 0 150px;
+  max-width: 150px;
+  padding-top: 6px;
+}
+
+.folderandgraphs-plus-rule-setting .setting-item-control {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.folderandgraphs-plus-folder-search {
+  flex: 1 1 260px;
+  max-width: 360px;
+  min-width: 220px;
+}
+
+.folderandgraphs-plus-folder-search-input {
+  width: 100%;
+}
+
+.folderandgraphs-plus-color-picker {
+  flex: 0 0 auto;
+}
+
+.folderandgraphs-plus-toggle-tag,
+.folderandgraphs-plus-strength-value {
+  align-items: center;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  min-height: 28px;
+  white-space: nowrap;
+}
+
+.folderandgraphs-plus-strength-value {
+  color: var(--text-normal);
+  justify-content: center;
+  min-width: 18px;
+}
+
+.folderandgraphs-plus-control-divider {
+  align-self: stretch;
+  background-color: var(--background-modifier-border);
+  display: inline-block;
+  flex: 0 0 1px;
+  margin: 4px 2px;
+  min-height: 28px;
+  width: 1px;
+}
+
+@media (max-width: 900px) {
+  .folderandgraphs-plus-rule-setting {
+    display: block;
+  }
+
+  .folderandgraphs-plus-rule-setting .setting-item-info {
+    max-width: none;
+  }
+
+  .folderandgraphs-plus-rule-setting .setting-item-control {
+    margin-top: 8px;
+  }
+}

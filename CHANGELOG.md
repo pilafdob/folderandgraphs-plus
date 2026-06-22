@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.0
+
+- Make glow strength increase glow spread instead of mostly changing opacity.
+- Improve folder colour settings layout so folder names remain visible with many controls.
+- Add visual dividers between folder colour controls.
+
 ## 1.5.0
 
 - Replace floating rings with a toggleable soft glow and 1-10 strength controls.
