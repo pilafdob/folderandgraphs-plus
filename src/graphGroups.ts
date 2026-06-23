@@ -13,6 +13,7 @@ export type FolderColorRuleType = "folder" | "combined";
 export type FolderColorChildRule = {
   type: FolderColorRuleType;
   target: string;
+  boldLabel: boolean;
   colorLinks: boolean;
   children: FolderColorChildRule[];
 };
@@ -23,6 +24,7 @@ export type FolderColorRule = {
   color: string;
   inheritToChildren: boolean;
   colorLinks: boolean;
+  boldLabel: boolean;
   children: FolderColorChildRule[];
 };
 
@@ -55,6 +57,7 @@ type FolderColorRuleMatch = {
   color: GraphColor;
   colorLinks: boolean;
   depth: number;
+  boldLabel: boolean;
   level: number;
   priority: number;
   ruleIndex: number;
@@ -64,6 +67,7 @@ type FolderColorRuleMatch = {
 export type FolderColorVisual = {
   color: GraphColor;
   colorLinks: boolean;
+  boldLabel: boolean;
 };
 
 export function normalizeVaultPath(path: unknown): string {
@@ -141,6 +145,10 @@ export function parseHexGraphColor(value: unknown): GraphColor | null {
   };
 }
 
+export function normalizeFolderRuleBoldLabel(value: unknown, legacyParentMarker: unknown): boolean {
+  return value === true || legacyParentMarker === true;
+}
+
 export function folderBasenameFromPath(folderPath: unknown): string {
   const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
   return parts[parts.length - 1] ?? "";
@@ -164,7 +172,8 @@ export function getFolderColorRuleVisual(
   return match
     ? {
         color: match.color,
-        colorLinks: getWinningColorLinks(matches)
+        colorLinks: getWinningColorLinks(matches),
+        boldLabel: hasBoldLabel(matches)
       }
     : null;
 }
@@ -178,6 +187,10 @@ function getWinningColorLinks(matches: readonly FolderColorRuleMatch[]): boolean
   }
 
   return true;
+}
+
+function hasBoldLabel(matches: readonly FolderColorRuleMatch[]): boolean {
+  return matches.some((match) => match.boldLabel);
 }
 
 function getSortedFolderColorRuleMatches(
@@ -257,6 +270,7 @@ function getFolderColorRuleMatches(
         color,
         colorLinks: rule.colorLinks !== false,
         depth: match.depth,
+        boldLabel: rule.boldLabel === true && mode === "folderNode" && match.exact,
         level: 0,
         priority: match.priority,
         ruleIndex,
@@ -319,6 +333,7 @@ function getNestedFolderColorRuleMatches(
       color,
       colorLinks: child.colorLinks !== false,
       depth: match.depth,
+      boldLabel: child.boldLabel === true && mode === "folderNode" && match.exact,
       level,
       priority: match.priority,
       ruleIndex: childRuleIndex,
@@ -518,7 +533,8 @@ export function getFolderVisualForPaths(
   return fallbackColor
     ? {
         color: fallbackColor,
-        colorLinks: true
+        colorLinks: true,
+        boldLabel: false
       }
     : null;
 }

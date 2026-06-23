@@ -52,6 +52,9 @@ function parseHexGraphColor(value) {
     rgb: Number.parseInt(value.trim().slice(1), 16)
   };
 }
+function normalizeFolderRuleBoldLabel(value, legacyParentMarker) {
+  return value === true || legacyParentMarker === true;
+}
 function folderBasenameFromPath(folderPath) {
   const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
   return parts[parts.length - 1] ?? "";
@@ -64,7 +67,8 @@ function getFolderColorRuleVisual(folderPaths, rules, mode = "folderNode") {
   const match = matches[matches.length - 1];
   return match ? {
     color: match.color,
-    colorLinks: getWinningColorLinks(matches)
+    colorLinks: getWinningColorLinks(matches),
+    boldLabel: hasBoldLabel(matches)
   } : null;
 }
 function getWinningColorLinks(matches) {
@@ -75,6 +79,9 @@ function getWinningColorLinks(matches) {
     }
   }
   return true;
+}
+function hasBoldLabel(matches) {
+  return matches.some((match) => match.boldLabel);
 }
 function getSortedFolderColorRuleMatches(folderPaths, rules, mode) {
   const matches = [];
@@ -119,6 +126,7 @@ function getFolderColorRuleMatches(folderPaths, rule, target, mode, color, ruleI
         color,
         colorLinks: rule.colorLinks !== false,
         depth: match.depth,
+        boldLabel: rule.boldLabel === true && mode === "folderNode" && match.exact,
         level: 0,
         priority: match.priority,
         ruleIndex,
@@ -159,6 +167,7 @@ function getNestedFolderColorRuleMatches(folderPath, children, parentScope, colo
       color,
       colorLinks: child.colorLinks !== false,
       depth: match.depth,
+      boldLabel: child.boldLabel === true && mode === "folderNode" && match.exact,
       level,
       priority: match.priority,
       ruleIndex: childRuleIndex,
@@ -278,8 +287,9 @@ function getFolderVisualForPaths(folderPaths, colorGroups, folderColorRules, mod
   }
   const fallbackColor = getFolderGroupColorForPaths(folderPaths, colorGroups);
   return fallbackColor ? {
-    color: fallbackColor,
-    colorLinks: true
+      color: fallbackColor,
+      colorLinks: true,
+      boldLabel: false
   } : null;
 }
 function getFolderGroupColor(folderPath, colorGroups) {
@@ -310,6 +320,7 @@ export {
   getGraphLinkColorDecision,
   getGraphNodePluginColors,
   isGraphColor,
+  normalizeFolderRuleBoldLabel,
   normalizeVaultPath,
   parseHexGraphColor,
   parsePathTokens
