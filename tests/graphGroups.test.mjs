@@ -14,6 +14,7 @@ import {
   getGraphNodePluginColors,
   getFolderGroupColor,
   getFolderGroupColorForPaths,
+  normalizeFolderRuleBoldLabel,
   parseHexGraphColor
 } from "../testable/graphGroups.mjs";
 
@@ -152,7 +153,90 @@ test("folder colour rule visual defaults color links to true", () => {
 
   assert.deepEqual(getFolderColorRuleVisual(["Biology"], rules), {
     color: { a: 1, rgb: 16711680 },
-    colorLinks: true
+    colorLinks: true,
+    boldLabel: false
+  });
+});
+
+test("legacy parent marker normalizes to bold label", () => {
+  assert.equal(normalizeFolderRuleBoldLabel(false, true), true);
+  assert.equal(normalizeFolderRuleBoldLabel(true, false), true);
+  assert.equal(normalizeFolderRuleBoldLabel(false, false), false);
+});
+
+test("regular exact folder rule can bold the exact folder node", () => {
+  const rules = [{
+    type: "folder",
+    target: "Biology",
+    color: "#ff0000",
+    inheritToChildren: true,
+    boldLabel: true
+  }];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    boldLabel: true
+  });
+});
+
+test("inherited child folder and file matches do not receive bold label", () => {
+  const rules = [{
+    type: "folder",
+    target: "Biology",
+    color: "#ff0000",
+    inheritToChildren: true,
+    boldLabel: true
+  }];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    boldLabel: false
+  });
+  assert.deepEqual(getFolderColorRuleVisual(["Biology"], rules, "fileNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    boldLabel: false
+  });
+});
+
+test("combined folder rule can bold exact same-basename folder nodes", () => {
+  const rules = [{
+    type: "combined",
+    target: "ebooks",
+    color: "#ffffff",
+    boldLabel: true
+  }];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/ebooks", "English/ebooks"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16777215 },
+    colorLinks: true,
+    boldLabel: true
+  });
+});
+
+test("child folder rule can bold only its exact folder node", () => {
+  const rules = [{
+    type: "folder",
+    target: "Biology",
+    color: "#ff0000",
+    children: [{
+      type: "folder",
+      target: "Studying",
+      boldLabel: true
+    }]
+  }];
+
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    boldLabel: true
+  });
+  assert.deepEqual(getFolderColorRuleVisual(["Biology/Studying/Notes"], rules, "folderNode"), {
+    color: { a: 1, rgb: 16711680 },
+    colorLinks: true,
+    boldLabel: false
   });
 });
 
@@ -176,7 +260,8 @@ test("folder visual fallback uses native colour", () => {
 
   assert.deepEqual(getFolderVisualForPaths(["Projects/Weekly"], groups, rules), {
     color: { a: 1, rgb: 333 },
-    colorLinks: true
+    colorLinks: true,
+    boldLabel: false
   });
 });
 
