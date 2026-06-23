@@ -1,6 +1,6 @@
 {
   "name": "folderandgraphs-plus",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Apply native Obsidian graph group colours to Folder2Graph folder nodes.",
   "main": "main.js",
   "scripts": {

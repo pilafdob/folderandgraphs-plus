@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.1
+
+- Add README installation and usage notes for Obsidian community review.
+- Include `styles.css` in GitHub artifact attestation coverage.
+- Replace scanner-flagged direct style assignment and global document access patterns.
+
 ## 3.0.0
 
 - Add a global Graph View folder emoji toggle that prefixes every Folder2Graph folder node label with `📁`.
@@ -7,9 +13,6 @@
 - Migrate existing per-rule parent marker settings into the new bold-label setting.
 - Keep folder label markers text-only; no drawn icons, rings, glows, or Pixi marker overlays are used.
 - Add tests for global emoji labels, prefix cleanup, legacy parent-marker migration, exact bold matching, and child-rule bold behavior.
-- Add README installation and usage notes for Obsidian community review.
-- Include `styles.css` in GitHub artifact attestation coverage.
-- Replace scanner-flagged direct style assignment and global document access patterns.
 
 ## 2.0.0
 
