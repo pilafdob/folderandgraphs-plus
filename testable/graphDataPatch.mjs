@@ -4,36 +4,56 @@ function installGraphDataPatch(existingPatch, renderer, transform) {
     restoreGraphDataPatch(existingPatch);
     return void 0;
   }
-  const key = getGraphDataPatchKey(renderer);
-  if (!key) {
+  const keys = getGraphDataPatchKeys(renderer);
+  if (keys.length === 0) {
     restoreGraphDataPatch(existingPatch);
     return void 0;
   }
-  if (existingPatch?.renderer === renderer && existingPatch.key === key && renderer[key] === existingPatch.wrapper) {
+  if (existingPatch?.renderer === renderer && existingPatch.entries.length === keys.length && existingPatch.entries.every((entry) => renderer[entry.key] === entry.wrapper) && keys.every((key) => existingPatch.entries.some((entry) => entry.key === key))) {
     return existingPatch;
   }
   restoreGraphDataPatch(existingPatch);
-  const original = renderer[key];
-  if (typeof original !== "function") {
+  const entries = [];
+  for (const key of keys) {
+    const original = renderer[key];
+    if (typeof original !== "function") {
+      continue;
+    }
+    const wrapper = (data) => original.call(renderer, transform(data));
+    renderer[key] = wrapper;
+    entries.push({ key, original, wrapper });
+  }
+  const primary = entries[0];
+  if (!primary) {
     return void 0;
   }
-  const wrapper = (data) => original.call(renderer, transform(data));
-  renderer[key] = wrapper;
-  return { renderer, key, original, wrapper };
+  return {
+    renderer,
+    key: primary.key,
+    original: primary.original,
+    wrapper: primary.wrapper,
+    entries
+  };
 }
 function restoreGraphDataPatch(patch) {
   if (!patch) {
     return;
   }
-  if (patch.renderer[patch.key] === patch.wrapper) {
-    patch.renderer[patch.key] = patch.original;
+  for (const entry of patch.entries) {
+    if (patch.renderer[entry.key] === entry.wrapper) {
+      patch.renderer[entry.key] = entry.original;
+    }
   }
 }
-function getGraphDataPatchKey(renderer) {
+function getGraphDataPatchKeys(renderer) {
+  const keys = [];
   if (typeof renderer.originalSetData === "function") {
-    return "originalSetData";
+    keys.push("originalSetData");
   }
-  return typeof renderer.setData === "function" ? "setData" : null;
+  if (typeof renderer.setData === "function") {
+    keys.push("setData");
+  }
+  return keys;
 }
 export {
   installGraphDataPatch,

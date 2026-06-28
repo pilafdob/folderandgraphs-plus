@@ -7,6 +7,7 @@ var DEFAULT_GRAPH_FILTER_SETTINGS = {
   showCanvases: true,
   attachmentMode: "all",
   attachmentExtensions: ["pdf"],
+  attachmentFolderRules: [],
   hideOrphans: false
 };
 var DOCUMENT_ATTACHMENT_EXTENSIONS = [
@@ -57,7 +58,7 @@ function normalizeGraphFilterSettings(value) {
     return { ...DEFAULT_GRAPH_FILTER_SETTINGS };
   }
   const raw = value;
-  return {
+  const settings = {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_GRAPH_FILTER_SETTINGS.enabled,
     showNotes: typeof raw.showNotes === "boolean" ? raw.showNotes : DEFAULT_GRAPH_FILTER_SETTINGS.showNotes,
     showFolders: typeof raw.showFolders === "boolean" ? raw.showFolders : DEFAULT_GRAPH_FILTER_SETTINGS.showFolders,
@@ -65,8 +66,14 @@ function normalizeGraphFilterSettings(value) {
     showCanvases: typeof raw.showCanvases === "boolean" ? raw.showCanvases : DEFAULT_GRAPH_FILTER_SETTINGS.showCanvases,
     attachmentMode: normalizeAttachmentMode(raw.attachmentMode),
     attachmentExtensions: normalizeAttachmentExtensions(raw.attachmentExtensions),
+    attachmentFolderRules: normalizeAttachmentFolderRules(raw.attachmentFolderRules),
     hideOrphans: typeof raw.hideOrphans === "boolean" ? raw.hideOrphans : DEFAULT_GRAPH_FILTER_SETTINGS.hideOrphans
   };
+  settings.enabled = settings.enabled || areGraphFiltersActive(settings);
+  return settings;
+}
+function areGraphFiltersActive(settings) {
+  return settings.attachmentMode !== "all" || settings.attachmentFolderRules.length > 0 || !settings.showFolders || !settings.showCanvases || settings.hideOrphans || !settings.showNotes || !settings.showTags;
 }
 function applyGraphFilters(data, settings, isFolderNode) {
   if (!settings.enabled || !data.nodes) {
@@ -108,7 +115,7 @@ function shouldShowGraphNode(nodeId, node, settings, isFolderNode) {
   if (extension === "canvas") {
     return settings.showCanvases;
   }
-  return shouldShowAttachmentExtension(extension, settings);
+  return shouldShowAttachmentExtension(extension, settings) && shouldShowAttachmentFolder(nodeId, settings);
 }
 function normalizeAttachmentExtensions(value) {
   const extensions = Array.isArray(value) ? value : typeof value === "string" ? value.split(/[\s,]+/) : DEFAULT_GRAPH_FILTER_SETTINGS.attachmentExtensions;
@@ -140,11 +147,70 @@ function shouldShowAttachmentExtension(extension, settings) {
       return false;
   }
 }
+function normalizeAttachmentFolderRules(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const rules = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) {
+      continue;
+    }
+    const raw = item;
+    if ((raw.type !== "folder" && raw.type !== "combined") || typeof raw.target !== "string") {
+      continue;
+    }
+    const target = raw.type === "combined" ? folderBasenameFromPath(raw.target) : normalizeVaultPath(raw.target);
+    if (!target) {
+      continue;
+    }
+    const key = `${raw.type}:${target}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    rules.push({ type: raw.type, target });
+  }
+  return rules;
+}
+function shouldShowAttachmentFolder(nodeId, settings) {
+  if (settings.attachmentFolderRules.length === 0) {
+    return true;
+  }
+  const folderPath = getNodeFolderPath(nodeId);
+  if (!folderPath) {
+    return false;
+  }
+  return settings.attachmentFolderRules.some((rule) => rule.type === "combined" ? folderPathContainsBasename(folderPath, rule.target) : folderPathMatchesPathRule(folderPath, rule.target));
+}
 function normalizeAttachmentMode(value) {
   if (value === "all" || value === "pdf" || value === "documents" || value === "hide-media" || value === "custom" || value === "none") {
     return value;
   }
   return value === "selected" ? "custom" : DEFAULT_GRAPH_FILTER_SETTINGS.attachmentMode;
+}
+function normalizeVaultPath(path) {
+  if (typeof path !== "string") return "";
+  return path.trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+function folderBasenameFromPath(folderPath) {
+  const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
+function folderPathMatchesPathRule(folderPath, rulePath) {
+  const folder = normalizeVaultPath(folderPath);
+  const rule = normalizeVaultPath(rulePath);
+  return rule.length > 0 && (folder === rule || folder.startsWith(`${rule}/`));
+}
+function folderPathContainsBasename(folderPath, basename) {
+  const target = folderBasenameFromPath(basename);
+  return target.length > 0 && normalizeVaultPath(folderPath).split("/").some((part) => part === target);
+}
+function getNodeFolderPath(nodeId) {
+  const path = normalizeVaultPath(nodeId.split("#")[0].split("?")[0]);
+  const slashIndex = path.lastIndexOf("/");
+  return slashIndex > 0 ? path.slice(0, slashIndex) : "";
 }
 function getNodeExtension(nodeId) {
   const path = nodeId.split("#")[0].split("?")[0];
@@ -190,9 +256,12 @@ export {
   DEFAULT_GRAPH_FILTER_SETTINGS,
   DOCUMENT_ATTACHMENT_EXTENSIONS,
   MEDIA_ATTACHMENT_EXTENSIONS,
+  areGraphFiltersActive,
   applyGraphFilters,
   normalizeAttachmentExtensions,
+  normalizeAttachmentFolderRules,
   normalizeGraphFilterSettings,
   shouldShowAttachmentExtension,
+  shouldShowAttachmentFolder,
   shouldShowGraphNode
 };

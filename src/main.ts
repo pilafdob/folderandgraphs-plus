@@ -27,10 +27,7 @@ import {
 } from "./graphDisplay";
 import {
   DEFAULT_GRAPH_FILTER_SETTINGS,
-  applyGraphFilters,
-  normalizeAttachmentExtensions,
   normalizeGraphFilterSettings,
-  type GraphFilterAttachmentMode,
   type GraphFilterSettings
 } from "./graphFilters";
 import {
@@ -56,7 +53,8 @@ const DEFAULT_SETTINGS: FolderAndGraphsPlusSettings = {
   showFolderEmoji: DEFAULT_SHOW_FOLDER_EMOJI,
   graphFilters: {
     ...DEFAULT_GRAPH_FILTER_SETTINGS,
-    attachmentExtensions: [...DEFAULT_GRAPH_FILTER_SETTINGS.attachmentExtensions]
+    attachmentExtensions: [...DEFAULT_GRAPH_FILTER_SETTINGS.attachmentExtensions],
+    attachmentFolderRules: [...DEFAULT_GRAPH_FILTER_SETTINGS.attachmentFolderRules]
   },
   folderColorRules: []
 };
@@ -66,18 +64,20 @@ function createDefaultSettings(): FolderAndGraphsPlusSettings {
     ...DEFAULT_SETTINGS,
     graphFilters: {
       ...DEFAULT_SETTINGS.graphFilters,
-      attachmentExtensions: [...DEFAULT_SETTINGS.graphFilters.attachmentExtensions]
+      attachmentExtensions: [...DEFAULT_SETTINGS.graphFilters.attachmentExtensions],
+      attachmentFolderRules: [...DEFAULT_SETTINGS.graphFilters.attachmentFolderRules]
     },
     folderColorRules: [...DEFAULT_SETTINGS.folderColorRules]
   };
 }
 
 type GraphRenderer = {
-  nodes?: unknown[];
+  nodes?: unknown[] | Set<unknown>;
   links?: unknown;
   edges?: unknown;
   linkNodes?: unknown;
   linkObjects?: unknown;
+  nodeLookup?: Record<string, unknown> | Map<string, unknown>;
   renderer?: Record<string, unknown>;
   graph?: Record<string, unknown>;
   changed?: () => void;
@@ -110,6 +110,7 @@ type GraphLeafController = {
 type PatchableGraphNode = {
   id?: unknown;
   type?: unknown;
+  folderNode?: unknown;
   __folderAndGraphsPlusOriginalGetFillColor?: () => GraphColor;
   __folderAndGraphsPlusOriginalGetDisplayText?: () => string;
   __folderAndGraphsPlusOriginalNodeRenderMethods?: Partial<Record<GraphNodeRenderMethodName, GraphNodeRenderMethod>>;
@@ -271,7 +272,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     );
 
     this.refreshGraphLeaves();
-    if (this.settings.combineSameNameFolders || this.isGraphFilterActive(this.settings.graphFilters)) {
+    if (this.settings.combineSameNameFolders) {
       this.refreshGraphsAfterSettingsChange();
     }
   }
@@ -310,8 +311,9 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
       this.ensureGraphLeafController(leaf);
 
-      if (Array.isArray(renderer.nodes) && renderer.nodes.length > 0) {
-        this.patchNodePrototype(renderer.nodes[0]);
+      const firstNode = this.objectValues(renderer.nodes)[0];
+      if (firstNode) {
+        this.patchNodePrototype(firstNode);
       }
 
       this.patchGraphLinkRendering(renderer);
@@ -337,7 +339,6 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     const controller = this.graphLeafControllers.get(leaf) ?? {};
     this.graphLeafControllers.set(leaf, controller);
     this.ensureGraphDataPatch(leaf, controller);
-    this.renderNativeGraphFilterControls(leaf);
   }
 
   private patchNodePrototype(node: unknown): void {
@@ -685,6 +686,10 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       return value;
     }
 
+    if (value instanceof Map || value instanceof Set) {
+      return [...value.values()];
+    }
+
     if (typeof value === "object" && value !== null) {
       return Object.values(value as Record<string, unknown>);
     }
@@ -879,6 +884,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private isGraphRenderer(value: unknown): value is GraphRenderer {
     return typeof value === "object" && value !== null && (
       Array.isArray((value as GraphRenderer).nodes) ||
+      (value as GraphRenderer).nodes instanceof Set ||
       Boolean((value as GraphRenderer).renderer) ||
       Boolean((value as GraphRenderer).graph)
     );
@@ -899,9 +905,9 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       this.getNodeFromLookup(rendererWithLookup.nodeLookup, nodeId) ??
       this.getNodeFromLookup(rendererWithLookup.renderer?.nodeLookup, nodeId) ??
       this.getNodeFromLookup(rendererWithLookup.graph?.nodeLookup, nodeId) ??
-      this.getNodeFromArray(renderer.nodes, nodeId) ??
-      this.getNodeFromArray(rendererWithLookup.renderer?.nodes, nodeId) ??
-      this.getNodeFromArray(rendererWithLookup.graph?.nodes, nodeId)
+      this.getNodeFromCollection(renderer.nodes, nodeId) ??
+      this.getNodeFromCollection(rendererWithLookup.renderer?.nodes, nodeId) ??
+      this.getNodeFromCollection(rendererWithLookup.graph?.nodes, nodeId)
     );
   }
 
@@ -913,8 +919,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     return lookup?.[nodeId] ?? null;
   }
 
-  private getNodeFromArray(nodes: unknown[] | undefined, nodeId: string): unknown {
-    return nodes?.find((node) => this.getGraphEndpointId(node) === nodeId) ?? null;
+  private getNodeFromCollection(nodes: unknown[] | Set<unknown> | undefined, nodeId: string): unknown {
+    return this.objectValues(nodes).find((node) => this.getGraphEndpointId(node) === nodeId) ?? null;
   }
 
   private getLineWidth(target: PixiLineLike): number {
@@ -1031,10 +1037,9 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private ensureGraphDataPatch(leaf: GraphLeaf, controller: GraphLeafController): void {
     const renderer = leaf.view?.renderer;
     controller.dataPatch = installGraphDataPatch(controller.dataPatch, renderer, (data) => {
-      const combinedData = this.settings.combineSameNameFolders
+      const nextData = this.settings.combineSameNameFolders
         ? this.mergeSameNameFolderNodes(data)
         : this.rememberSeparateFolderPaths(data);
-      const nextData = this.filterGraphData(combinedData);
 
       this.rememberNodePluginColors(nextData);
       return nextData;
@@ -1051,212 +1056,6 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     }
   }
 
-  private renderNativeGraphFilterControls(leaf: GraphLeaf, force = false): void {
-    const panelEl = this.findGraphControlsPanel(leaf);
-    if (!panelEl) {
-      return;
-    }
-
-    const existing = panelEl.querySelector(".folderandgraphs-plus-native-filters");
-    if (existing && !force) {
-      return;
-    }
-    existing?.remove();
-
-    const attachmentRow = this.findGraphFilterRow(panelEl, "Attachments");
-    if (!attachmentRow?.parentElement) {
-      return;
-    }
-
-    const containerEl = activeDocument.createElement("div");
-    containerEl.className = "folderandgraphs-plus-native-filters";
-    containerEl.setAttr("data-folderandgraphs-plus-native-filters", "true");
-
-    this.renderAttachmentModeControl(containerEl);
-    if (this.settings.graphFilters.attachmentMode === "custom") {
-      this.renderCustomExtensionsControl(containerEl);
-    }
-    this.renderBooleanGraphFilterControl(containerEl, "Folders", "showFolders");
-    this.renderBooleanGraphFilterControl(containerEl, "Canvases", "showCanvases");
-
-    attachmentRow.insertAdjacentElement("afterend", containerEl);
-  }
-
-  private findGraphControlsPanel(leaf: GraphLeaf): HTMLElement | null {
-    const roots = [
-      leaf.view?.containerEl,
-      (leaf as { containerEl?: HTMLElement }).containerEl,
-      activeDocument.body
-    ].filter((root): root is HTMLElement => root instanceof HTMLElement);
-    const candidates = roots
-      .flatMap((root) => [root, ...Array.from(root.querySelectorAll<HTMLElement>("div"))])
-      .filter((element) => {
-        const text = element.textContent ?? "";
-        return text.includes("Filters") && text.includes("Attachments") && text.includes("Groups");
-      })
-      .sort((a, b) => (a.textContent?.length ?? 0) - (b.textContent?.length ?? 0));
-
-    return candidates[0] ?? null;
-  }
-
-  private findGraphFilterRow(panelEl: HTMLElement, label: string): HTMLElement | null {
-    const candidates = Array.from(panelEl.querySelectorAll<HTMLElement>("div, label, .setting-item"));
-    const exact = candidates.find((element) => element.textContent?.trim() === label);
-    const row = exact ? this.findGraphFilterRowContainer(exact, panelEl) : null;
-    if (row) {
-      return row;
-    }
-
-    return candidates.find((element) => element.textContent?.trim() === label) ?? null;
-  }
-
-  private findGraphFilterRowContainer(element: HTMLElement, panelEl: HTMLElement): HTMLElement {
-    let current: HTMLElement = element;
-    while (
-      current.parentElement &&
-      current.parentElement !== panelEl &&
-      !this.hasInteractiveGraphFilterControl(current)
-    ) {
-      current = current.parentElement;
-    }
-
-    return current;
-  }
-
-  private hasInteractiveGraphFilterControl(element: HTMLElement): boolean {
-    return Boolean(element.querySelector("input, button, select, .checkbox-container, .checkbox-container input"));
-  }
-
-  private renderAttachmentModeControl(containerEl: HTMLElement): void {
-    const options: { value: GraphFilterAttachmentMode; label: string }[] = [
-      { value: "all", label: "All" },
-      { value: "pdf", label: "PDF only" },
-      { value: "documents", label: "Documents" },
-      { value: "hide-media", label: "Hide media" },
-      { value: "custom", label: "Custom" },
-      { value: "none", label: "None" }
-    ];
-
-    new Setting(containerEl)
-      .setName("Attachment type")
-      .addDropdown((dropdown) => {
-        for (const option of options) {
-          dropdown.addOption(option.value, option.label);
-        }
-
-        dropdown
-          .setValue(this.settings.graphFilters.attachmentMode)
-          .onChange((value) => {
-            void this.updateGraphFilters((settings) => {
-              settings.attachmentMode = this.normalizeAttachmentMode(value);
-            });
-          });
-      });
-  }
-
-  private renderCustomExtensionsControl(containerEl: HTMLElement): void {
-    new Setting(containerEl)
-      .setName("Extensions")
-      .addText((text) => {
-        text
-          .setPlaceholder("pdf, epub, mobi")
-          .setValue(this.settings.graphFilters.attachmentExtensions.join(", "))
-          .onChange((value) => {
-            void this.updateGraphFilters((settings) => {
-              settings.attachmentMode = "custom";
-              settings.attachmentExtensions = normalizeAttachmentExtensions(value);
-            }, false);
-          });
-      });
-  }
-
-  private renderBooleanGraphFilterControl(
-    containerEl: HTMLElement,
-    label: string,
-    key: "showFolders" | "showCanvases"
-  ): void {
-    new Setting(containerEl)
-      .setName(label)
-      .addToggle((toggle) => {
-        toggle
-          .setValue(this.settings.graphFilters[key])
-          .onChange((value) => {
-            void this.updateGraphFilters((settings) => {
-              settings[key] = value;
-            });
-          });
-      });
-  }
-
-  private normalizeAttachmentMode(value: string): GraphFilterAttachmentMode {
-    return value === "all" ||
-      value === "pdf" ||
-      value === "documents" ||
-      value === "hide-media" ||
-      value === "custom" ||
-      value === "none"
-      ? value
-      : "all";
-  }
-
-  private async updateGraphFilters(
-    update: (settings: GraphFilterSettings) => void,
-    rerenderControls = true
-  ): Promise<void> {
-    const settings = {
-      ...this.settings.graphFilters,
-      attachmentExtensions: [...this.settings.graphFilters.attachmentExtensions]
-    };
-    update(settings);
-    settings.enabled = this.isGraphFilterActive(settings);
-    this.settings.graphFilters = settings;
-    await this.saveSettings();
-    this.refreshGraphsAfterFilterChange();
-    if (rerenderControls) {
-      for (const leaf of this.getGraphLeaves()) {
-        this.renderNativeGraphFilterControls(leaf, true);
-      }
-    }
-  }
-
-  private isGraphFilterActive(settings: GraphFilterSettings): boolean {
-    return (
-      settings.attachmentMode !== "all" ||
-      !settings.showFolders ||
-      !settings.showCanvases ||
-      settings.hideOrphans ||
-      !settings.showNotes ||
-      !settings.showTags
-    );
-  }
-
-  private refreshGraphsAfterFilterChange(): void {
-    for (const leaf of this.getGraphLeaves()) {
-      this.ensureGraphLeafController(leaf);
-      const dataEngine = leaf.view?.dataEngine;
-      if (typeof dataEngine?.updateSearch === "function") {
-        dataEngine.updateSearch();
-      } else if (typeof dataEngine?.requestUpdateSearch?.run === "function") {
-        dataEngine.requestUpdateSearch.run();
-      } else {
-        this.reloadGraphLeaf(leaf);
-      }
-      leaf.view?.renderer?.changed?.();
-    }
-  }
-
-  private reloadGraphLeaf(leaf: GraphLeaf): void {
-    const view = leaf.view;
-    const options = view?.dataEngine?.getOptions?.();
-    view?.renderer?.changed?.();
-    view?.unload?.();
-    view?.load?.();
-    if (options !== undefined) {
-      view?.dataEngine?.setOptions?.(options);
-    }
-    view?.renderer?.changed?.();
-  }
-
   private rememberSeparateFolderPaths(data: GraphData): GraphData {
     this.combinedFolderPathsByNodeId = new Map();
 
@@ -1270,12 +1069,16 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     return data;
   }
 
-  private filterGraphData(data: GraphData): GraphData {
-    return applyGraphFilters(
-      data,
-      this.settings.graphFilters,
-      (nodeId, node) => this.isFolderNode(nodeId, node)
-    ) as GraphData;
+  private reloadGraphLeaf(leaf: GraphLeaf): void {
+    const view = leaf.view;
+    const options = view?.dataEngine?.getOptions?.();
+    view?.renderer?.changed?.();
+    view?.unload?.();
+    view?.load?.();
+    if (options !== undefined) {
+      view?.dataEngine?.setOptions?.(options);
+    }
+    view?.renderer?.changed?.();
   }
 
   private rememberNodePluginColors(data: GraphData): void {
@@ -1426,7 +1229,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         typeof raw.showFolderEmoji === "boolean"
           ? raw.showFolderEmoji
           : DEFAULT_SETTINGS.showFolderEmoji,
-      graphFilters: normalizeGraphFilterSettings(raw.graphFilters),
+      graphFilters: normalizeGraphFilterSettings(undefined),
       folderColorRules: this.parseFolderColorRules(raw.folderColorRules, raw.combinedFolderColorOverrides),
       folder2graph: this.parseFolder2GraphSettings(raw.folder2graph)
     };

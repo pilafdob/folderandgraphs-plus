@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.2
+
+- Remove the plugin-injected controls from Obsidian's native Graph View Filters panel.
+- Ignore legacy custom graph-filter settings on load so removed controls no longer affect the graph invisibly.
+- Keep folder colouring, same-name folder combining, folder emoji labels, and per-folder bold labels unchanged.
+
 ## 3.0.1
 
 - Add README installation and usage notes for Obsidian community review.

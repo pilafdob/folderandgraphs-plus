@@ -5,11 +5,18 @@ export type GraphDataRenderer<TData> = {
 
 export type GraphDataMethodKey = "setData" | "originalSetData";
 
+export type GraphDataPatchEntry<TData> = {
+  key: GraphDataMethodKey;
+  original: (data: TData) => unknown;
+  wrapper: (data: TData) => unknown;
+};
+
 export type GraphDataPatch<TData> = {
   renderer: GraphDataRenderer<TData>;
   key: GraphDataMethodKey;
   original: (data: TData) => unknown;
   wrapper: (data: TData) => unknown;
+  entries: GraphDataPatchEntry<TData>[];
 };
 
 export function installGraphDataPatch<TData>(
@@ -22,27 +29,47 @@ export function installGraphDataPatch<TData>(
     return undefined;
   }
 
-  const key = getGraphDataPatchKey(renderer);
-  if (!key) {
+  const keys = getGraphDataPatchKeys(renderer);
+  if (keys.length === 0) {
     restoreGraphDataPatch(existingPatch);
     return undefined;
   }
 
-  if (existingPatch?.renderer === renderer && existingPatch.key === key && renderer[key] === existingPatch.wrapper) {
+  if (
+    existingPatch?.renderer === renderer &&
+    existingPatch.entries.length === keys.length &&
+    existingPatch.entries.every((entry) => renderer[entry.key] === entry.wrapper) &&
+    keys.every((key) => existingPatch.entries.some((entry) => entry.key === key))
+  ) {
     return existingPatch;
   }
 
   restoreGraphDataPatch(existingPatch);
 
-  const original = renderer[key];
-  if (typeof original !== "function") {
+  const entries: GraphDataPatchEntry<TData>[] = [];
+  for (const key of keys) {
+    const original = renderer[key];
+    if (typeof original !== "function") {
+      continue;
+    }
+
+    const wrapper = (data: TData): unknown => original.call(renderer, transform(data));
+    renderer[key] = wrapper;
+    entries.push({ key, original, wrapper });
+  }
+
+  const primary = entries[0];
+  if (!primary) {
     return undefined;
   }
 
-  const wrapper = (data: TData): unknown => original.call(renderer, transform(data));
-  renderer[key] = wrapper;
-
-  return { renderer, key, original, wrapper };
+  return {
+    renderer,
+    key: primary.key,
+    original: primary.original,
+    wrapper: primary.wrapper,
+    entries
+  };
 }
 
 export function restoreGraphDataPatch<TData>(patch: GraphDataPatch<TData> | undefined): void {
@@ -50,15 +77,22 @@ export function restoreGraphDataPatch<TData>(patch: GraphDataPatch<TData> | unde
     return;
   }
 
-  if (patch.renderer[patch.key] === patch.wrapper) {
-    patch.renderer[patch.key] = patch.original;
+  for (const entry of patch.entries) {
+    if (patch.renderer[entry.key] === entry.wrapper) {
+      patch.renderer[entry.key] = entry.original;
+    }
   }
 }
 
-function getGraphDataPatchKey<TData>(renderer: GraphDataRenderer<TData>): GraphDataMethodKey | null {
+function getGraphDataPatchKeys<TData>(renderer: GraphDataRenderer<TData>): GraphDataMethodKey[] {
+  const keys: GraphDataMethodKey[] = [];
   if (typeof renderer.originalSetData === "function") {
-    return "originalSetData";
+    keys.push("originalSetData");
   }
 
-  return typeof renderer.setData === "function" ? "setData" : null;
+  if (typeof renderer.setData === "function") {
+    keys.push("setData");
+  }
+
+  return keys;
 }

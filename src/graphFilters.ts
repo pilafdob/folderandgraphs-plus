@@ -1,5 +1,10 @@
 export type GraphFilterAttachmentMode = "all" | "pdf" | "documents" | "hide-media" | "custom" | "none";
 
+export type GraphFilterAttachmentFolderRule = {
+  type: "folder" | "combined";
+  target: string;
+};
+
 export type GraphFilterSettings = {
   enabled: boolean;
   showNotes: boolean;
@@ -8,6 +13,7 @@ export type GraphFilterSettings = {
   showCanvases: boolean;
   attachmentMode: GraphFilterAttachmentMode;
   attachmentExtensions: string[];
+  attachmentFolderRules: GraphFilterAttachmentFolderRule[];
   hideOrphans: boolean;
 };
 
@@ -31,6 +37,7 @@ export const DEFAULT_GRAPH_FILTER_SETTINGS: GraphFilterSettings = {
   showCanvases: true,
   attachmentMode: "all",
   attachmentExtensions: ["pdf"],
+  attachmentFolderRules: [],
   hideOrphans: false
 };
 
@@ -86,7 +93,7 @@ export function normalizeGraphFilterSettings(value: unknown): GraphFilterSetting
   }
 
   const raw = value as Record<string, unknown>;
-  return {
+  const settings: GraphFilterSettings = {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_GRAPH_FILTER_SETTINGS.enabled,
     showNotes: typeof raw.showNotes === "boolean" ? raw.showNotes : DEFAULT_GRAPH_FILTER_SETTINGS.showNotes,
     showFolders: typeof raw.showFolders === "boolean" ? raw.showFolders : DEFAULT_GRAPH_FILTER_SETTINGS.showFolders,
@@ -94,8 +101,24 @@ export function normalizeGraphFilterSettings(value: unknown): GraphFilterSetting
     showCanvases: typeof raw.showCanvases === "boolean" ? raw.showCanvases : DEFAULT_GRAPH_FILTER_SETTINGS.showCanvases,
     attachmentMode: normalizeAttachmentMode(raw.attachmentMode),
     attachmentExtensions: normalizeAttachmentExtensions(raw.attachmentExtensions),
+    attachmentFolderRules: normalizeAttachmentFolderRules(raw.attachmentFolderRules),
     hideOrphans: typeof raw.hideOrphans === "boolean" ? raw.hideOrphans : DEFAULT_GRAPH_FILTER_SETTINGS.hideOrphans
   };
+
+  settings.enabled = settings.enabled || areGraphFiltersActive(settings);
+  return settings;
+}
+
+export function areGraphFiltersActive(settings: GraphFilterSettings): boolean {
+  return (
+    settings.attachmentMode !== "all" ||
+    settings.attachmentFolderRules.length > 0 ||
+    !settings.showFolders ||
+    !settings.showCanvases ||
+    settings.hideOrphans ||
+    !settings.showNotes ||
+    !settings.showTags
+  );
 }
 
 export function applyGraphFilters(
@@ -157,7 +180,7 @@ export function shouldShowGraphNode(
     return settings.showCanvases;
   }
 
-  return shouldShowAttachmentExtension(extension, settings);
+  return shouldShowAttachmentExtension(extension, settings) && shouldShowAttachmentFolder(nodeId, settings);
 }
 
 export function normalizeAttachmentExtensions(value: unknown): string[] {
@@ -199,6 +222,59 @@ export function shouldShowAttachmentExtension(extension: string, settings: Graph
   }
 }
 
+export function normalizeAttachmentFolderRules(value: unknown): GraphFilterAttachmentFolderRule[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const rules: GraphFilterAttachmentFolderRule[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) {
+      continue;
+    }
+
+    const raw = item as Record<string, unknown>;
+    if ((raw.type !== "folder" && raw.type !== "combined") || typeof raw.target !== "string") {
+      continue;
+    }
+
+    const target = raw.type === "combined"
+      ? folderBasenameFromPath(raw.target)
+      : normalizeVaultPath(raw.target);
+    if (!target) {
+      continue;
+    }
+
+    const key = `${raw.type}:${target}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    rules.push({ type: raw.type, target });
+  }
+
+  return rules;
+}
+
+export function shouldShowAttachmentFolder(nodeId: string, settings: GraphFilterSettings): boolean {
+  if (settings.attachmentFolderRules.length === 0) {
+    return true;
+  }
+
+  const folderPath = getNodeFolderPath(nodeId);
+  if (!folderPath) {
+    return false;
+  }
+
+  return settings.attachmentFolderRules.some((rule) => (
+    rule.type === "combined"
+      ? folderPathContainsBasename(folderPath, rule.target)
+      : folderPathMatchesPathRule(folderPath, rule.target)
+  ));
+}
+
 function normalizeAttachmentMode(value: unknown): GraphFilterAttachmentMode {
   if (
     value === "all" ||
@@ -212,6 +288,37 @@ function normalizeAttachmentMode(value: unknown): GraphFilterAttachmentMode {
   }
 
   return value === "selected" ? "custom" : DEFAULT_GRAPH_FILTER_SETTINGS.attachmentMode;
+}
+
+function normalizeVaultPath(path: unknown): string {
+  if (typeof path !== "string") return "";
+  return path
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+}
+
+function folderBasenameFromPath(folderPath: unknown): string {
+  const parts = normalizeVaultPath(folderPath).split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
+
+function folderPathMatchesPathRule(folderPath: string, rulePath: string): boolean {
+  const folder = normalizeVaultPath(folderPath);
+  const rule = normalizeVaultPath(rulePath);
+  return rule.length > 0 && (folder === rule || folder.startsWith(`${rule}/`));
+}
+
+function folderPathContainsBasename(folderPath: string, basename: string): boolean {
+  const target = folderBasenameFromPath(basename);
+  return target.length > 0 && normalizeVaultPath(folderPath).split("/").some((part) => part === target);
+}
+
+function getNodeFolderPath(nodeId: string): string {
+  const path = normalizeVaultPath(nodeId.split("#")[0].split("?")[0]);
+  const slashIndex = path.lastIndexOf("/");
+  return slashIndex > 0 ? path.slice(0, slashIndex) : "";
 }
 
 function getNodeExtension(nodeId: string): string {
