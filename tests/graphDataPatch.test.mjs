@@ -42,6 +42,43 @@ test("graph data patch also wraps setData when originalSetData is present", () =
   assert.deepEqual(calls, [["setData", { nodes: {}, patched: true }]]);
 });
 
+test("graph data patch bypasses Folder2Graph setData for transient data without nodes", () => {
+  const calls = [];
+  const renderer = {
+    setData(data) {
+      calls.push(["setData", data]);
+      if (!data.nodes) {
+        throw new TypeError("Cannot convert undefined or null to object");
+      }
+    },
+    originalSetData(data) {
+      calls.push(["originalSetData", data]);
+    }
+  };
+
+  installGraphDataPatch(undefined, renderer, (data) => ({ ...data, patched: true }));
+  renderer.setData({ query: "" });
+
+  assert.deepEqual(calls, [["originalSetData", { query: "", patched: true }]]);
+});
+
+test("graph data patch still sends graph data with nodes through Folder2Graph setData", () => {
+  const calls = [];
+  const renderer = {
+    setData(data) {
+      calls.push(["setData", data]);
+    },
+    originalSetData(data) {
+      calls.push(["originalSetData", data]);
+    }
+  };
+
+  installGraphDataPatch(undefined, renderer, (data) => ({ ...data, patched: true }));
+  renderer.setData({ nodes: {} });
+
+  assert.deepEqual(calls, [["setData", { nodes: {}, patched: true }]]);
+});
+
 test("graph data patch wraps setData when originalSetData is absent", () => {
   const calls = [];
   const renderer = {

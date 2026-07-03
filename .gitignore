@@ -8,3 +8,5 @@ data.json
 
 # Local build/watch artifacts
 main.js.map
+CODEX_RING_COLOR_HANDOFF.md
+CODEX_GRAPH_VIEW_HOOKS_HANDOFF.md

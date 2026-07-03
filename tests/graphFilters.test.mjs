@@ -24,7 +24,7 @@ test("disabled graph filters leave data untouched", () => {
   assert.equal(applyGraphFilters(data, DEFAULT_GRAPH_FILTER_SETTINGS, isFolderNode), data);
 });
 
-test("selected attachment extensions keep only matching attachments and clean links", () => {
+test("show-only attachment extensions keep only matching attachments and clean links", () => {
   const data = {
     nodes: {
       "/Attachments": { type: "f2g_node", links: { "Attachments/file.pdf": true, "Attachments/image.png": true } },
@@ -43,6 +43,50 @@ test("selected attachment extensions keep only matching attachments and clean li
       showTags: false,
       attachmentMode: "custom",
       attachmentExtensions: ["pdf"]
+    },
+    isFolderNode
+  );
+
+  assert.deepEqual(Object.keys(filtered.nodes).sort(), [
+    "/Attachments",
+    "Attachments/file.pdf",
+    "Notes/A.md"
+  ]);
+  assert.deepEqual(filtered.nodes["Notes/A.md"].links, { "Attachments/file.pdf": true });
+  assert.deepEqual(filtered.nodes["/Attachments"].links, { "Attachments/file.pdf": true });
+});
+
+test("hide-listed attachment extensions remove matching attachments and clean links", () => {
+  const data = {
+    nodes: {
+      "/Attachments": {
+        type: "f2g_node",
+        links: {
+          "Attachments/file.pdf": true,
+          "Attachments/image.png": true,
+          "Attachments/photo.jpg": true
+        }
+      },
+      "Notes/A.md": {
+        links: {
+          "Attachments/file.pdf": true,
+          "Attachments/image.png": true,
+          "Attachments/photo.jpg": true
+        }
+      },
+      "Attachments/file.pdf": { links: { "Notes/A.md": true } },
+      "Attachments/image.png": { links: { "Notes/A.md": true } },
+      "Attachments/photo.jpg": { links: { "Notes/A.md": true } }
+    }
+  };
+
+  const filtered = applyGraphFilters(
+    data,
+    {
+      ...DEFAULT_GRAPH_FILTER_SETTINGS,
+      enabled: true,
+      attachmentMode: "hide-custom",
+      attachmentExtensions: ["jpg", "png"]
     },
     isFolderNode
   );
@@ -188,6 +232,50 @@ test("attachment mode none hides all non-note files but keeps canvases separatel
   assert.equal(shouldShowGraphNode("Attachments/image.png", {}, settings, isFolderNode), false);
 });
 
+test("empty hide-listed attachment list hides nothing", () => {
+  const settings = {
+    ...DEFAULT_GRAPH_FILTER_SETTINGS,
+    enabled: true,
+    attachmentMode: "hide-custom",
+    attachmentExtensions: []
+  };
+
+  assert.equal(shouldShowGraphNode("Attachments/file.pdf", {}, settings, isFolderNode), true);
+  assert.equal(shouldShowGraphNode("Attachments/image.png", {}, settings, isFolderNode), true);
+});
+
+test("empty show-only attachment list hides all attachments", () => {
+  const settings = {
+    ...DEFAULT_GRAPH_FILTER_SETTINGS,
+    enabled: true,
+    attachmentMode: "custom",
+    attachmentExtensions: []
+  };
+
+  assert.equal(shouldShowGraphNode("Notes/A.md", {}, settings, isFolderNode), true);
+  assert.equal(shouldShowGraphNode("Boards/Map.canvas", {}, settings, isFolderNode), true);
+  assert.equal(shouldShowGraphNode("Attachments/file.pdf", {}, settings, isFolderNode), false);
+  assert.equal(shouldShowGraphNode("Attachments/image.png", {}, settings, isFolderNode), false);
+});
+
+test("saved disabled attachment filter values remain disabled", () => {
+  const data = {
+    nodes: {
+      "Notes/A.md": { links: { "Attachments/file.pdf": true, "Attachments/image.png": true } },
+      "Attachments/file.pdf": { links: { "Notes/A.md": true } },
+      "Attachments/image.png": { links: { "Notes/A.md": true } }
+    }
+  };
+  const settings = normalizeGraphFilterSettings({
+    enabled: false,
+    attachmentMode: "custom",
+    attachmentExtensions: ".pdf"
+  });
+
+  assert.equal(settings.enabled, false);
+  assert.equal(applyGraphFilters(data, settings, isFolderNode), data);
+});
+
 test("custom attachment filters do not re-add attachments removed by native filters", () => {
   const data = {
     nodes: {
@@ -207,6 +295,44 @@ test("custom attachment filters do not re-add attachments removed by native filt
   );
 
   assert.deepEqual(filtered, data);
+});
+
+test("filtered graph keeps empty link objects for Folder2Graph compatibility", () => {
+  const data = {
+    nodes: {
+      "Notes/A.md": { links: { "Attachments/image.png": true } },
+      "Notes/B.md": {},
+      "Attachments/image.png": { links: { "Notes/A.md": true } }
+    }
+  };
+
+  const filtered = applyGraphFilters(
+    data,
+    {
+      ...DEFAULT_GRAPH_FILTER_SETTINGS,
+      enabled: true,
+      attachmentMode: "hide-custom",
+      attachmentExtensions: ["png"]
+    },
+    isFolderNode
+  );
+
+  assert.deepEqual(filtered.nodes["Notes/A.md"].links, {});
+  assert.deepEqual(filtered.nodes["Notes/B.md"].links, {});
+});
+
+test("attachment-like folder nodes from macOS packages obey attachment extension filters", () => {
+  const settings = {
+    ...DEFAULT_GRAPH_FILTER_SETTINGS,
+    enabled: true,
+    attachmentMode: "custom",
+    attachmentExtensions: ["pdf"]
+  };
+
+  assert.equal(shouldShowGraphNode("/English/report.pages", { type: "f2g_node" }, settings, isFolderNode), false);
+  assert.equal(shouldShowGraphNode("/English/report.pages/Metadata", { type: "f2g_node" }, settings, isFolderNode), false);
+  assert.equal(shouldShowGraphNode("/English/report.pdf", { type: "f2g_node" }, settings, isFolderNode), true);
+  assert.equal(shouldShowGraphNode("/English/schoolwork", { type: "f2g_node" }, settings, isFolderNode), true);
 });
 
 test("folder nodes and canvases can be hidden independently", () => {
@@ -248,6 +374,8 @@ test("hide orphans removes nodes with no visible links after filtering", () => {
 
 test("graph filter settings and extension lists are normalized", () => {
   assert.deepEqual(normalizeAttachmentExtensions([".PDF", "pdf", "png", "bad ext", 4]), ["pdf", "png"]);
+  assert.deepEqual(normalizeAttachmentExtensions(".JPG, jpg .PNG bad-ext"), ["jpg", "png"]);
+  assert.deepEqual(normalizeAttachmentExtensions(undefined), []);
   assert.deepEqual(normalizeAttachmentFolderRules([
     { type: "folder", target: "/Attachments/" },
     { type: "folder", target: "Attachments" },
@@ -263,7 +391,7 @@ test("graph filter settings and extension lists are normalized", () => {
   assert.deepEqual(normalizeGraphFilterSettings({
     enabled: true,
     showNotes: false,
-    attachmentMode: "custom",
+    attachmentMode: "hide-custom",
     attachmentExtensions: ".PDF, epub png",
     attachmentFolderRules: [
       { type: "folder", target: "Attachments" },
@@ -274,7 +402,7 @@ test("graph filter settings and extension lists are normalized", () => {
     ...DEFAULT_GRAPH_FILTER_SETTINGS,
     enabled: true,
     showNotes: false,
-    attachmentMode: "custom",
+    attachmentMode: "hide-custom",
     attachmentExtensions: ["epub", "pdf", "png"],
     attachmentFolderRules: [
       { type: "folder", target: "Attachments" },
@@ -283,11 +411,30 @@ test("graph filter settings and extension lists are normalized", () => {
     hideOrphans: true
   });
   assert.equal(normalizeGraphFilterSettings({ attachmentMode: "selected" }).attachmentMode, "custom");
+  assert.equal(normalizeGraphFilterSettings({ attachmentMode: "hide-custom" }).attachmentMode, "hide-custom");
 });
 
-test("active saved filter controls force stale disabled state back on", () => {
+test("active saved filter controls do not force stale disabled state back on", () => {
+  const data = {
+    nodes: {
+      "English/ebooks/book.pdf": { links: { "English/ebooks/archive.zip": true } },
+      "English/homework/book.pdf": { links: { "English/ebooks/book.pdf": true } },
+      "English/ebooks/archive.zip": { links: { "English/ebooks/book.pdf": true } }
+    }
+  };
   const settings = normalizeGraphFilterSettings({
     enabled: false,
+    attachmentMode: "pdf",
+    attachmentFolderRules: [{ type: "combined", target: "ebooks" }]
+  });
+
+  assert.equal(settings.enabled, false);
+  assert.equal(applyGraphFilters(data, settings, isFolderNode), data);
+});
+
+test("enabled saved filter controls still apply when explicitly enabled", () => {
+  const settings = normalizeGraphFilterSettings({
+    enabled: true,
     attachmentMode: "pdf",
     attachmentFolderRules: [{ type: "combined", target: "ebooks" }]
   });

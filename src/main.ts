@@ -3,9 +3,14 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  TFile,
   TFolder,
   prepareFuzzySearch,
   type TAbstractFile,
+  type DataAdapter,
+  type FileStats,
+  type ListedFiles,
+  type Stat,
   type WorkspaceLeaf
 } from "obsidian";
 import {
@@ -27,6 +32,7 @@ import {
 } from "./graphDisplay";
 import {
   DEFAULT_GRAPH_FILTER_SETTINGS,
+  applyGraphFilters,
   normalizeGraphFilterSettings,
   type GraphFilterSettings
 } from "./graphFilters";
@@ -35,6 +41,15 @@ import {
   restoreGraphDataPatch,
   type GraphDataPatch
 } from "./graphDataPatch";
+import {
+  DEFAULT_IWORK_PACKAGE_SETTINGS,
+  getPathExtension,
+  isIWorkPackagePath,
+  moveIWorkPackagesFromFolderList,
+  normalizeIWorkPackageGraphData,
+  normalizeIWorkPackageSettings,
+  type IWorkPackageSettings
+} from "./iworkPackages";
 import Folder2GraphPlugin from "./vendor/folders2graph/main";
 
 const FOLDER2GRAPH_NODE_TYPE = "f2g_node";
@@ -43,6 +58,7 @@ const DEFAULT_FOLDER_RULE_COLOR = "#5c8af5";
 type FolderAndGraphsPlusSettings = {
   combineSameNameFolders: boolean;
   showFolderEmoji: boolean;
+  iWorkPackages: IWorkPackageSettings;
   graphFilters: GraphFilterSettings;
   folderColorRules: FolderColorRule[];
   folder2graph?: Record<string, unknown>;
@@ -51,6 +67,7 @@ type FolderAndGraphsPlusSettings = {
 const DEFAULT_SETTINGS: FolderAndGraphsPlusSettings = {
   combineSameNameFolders: false,
   showFolderEmoji: DEFAULT_SHOW_FOLDER_EMOJI,
+  iWorkPackages: { ...DEFAULT_IWORK_PACKAGE_SETTINGS },
   graphFilters: {
     ...DEFAULT_GRAPH_FILTER_SETTINGS,
     attachmentExtensions: [...DEFAULT_GRAPH_FILTER_SETTINGS.attachmentExtensions],
@@ -62,6 +79,7 @@ const DEFAULT_SETTINGS: FolderAndGraphsPlusSettings = {
 function createDefaultSettings(): FolderAndGraphsPlusSettings {
   return {
     ...DEFAULT_SETTINGS,
+    iWorkPackages: { ...DEFAULT_SETTINGS.iWorkPackages },
     graphFilters: {
       ...DEFAULT_SETTINGS.graphFilters,
       attachmentExtensions: [...DEFAULT_SETTINGS.graphFilters.attachmentExtensions],
@@ -223,6 +241,31 @@ type GraphData = {
 
 type Folder2GraphSettings = Record<string, unknown>;
 
+type IWorkPackageFileRecord = {
+  file: TAbstractFile;
+  originalPrototype: object | null;
+  originalChildren: TAbstractFile[];
+  hadBasename: boolean;
+  basename: unknown;
+  hadExtension: boolean;
+  extension: unknown;
+  hadStat: boolean;
+  stat: unknown;
+};
+
+type PatchableAdapter = DataAdapter & {
+  list: DataAdapter["list"];
+  stat: DataAdapter["stat"];
+};
+
+type FileExplorerLike = {
+  refresh?: () => void;
+  requestRefresh?: () => void;
+  requestSort?: () => void;
+  update?: () => void;
+  containerEl?: HTMLElement;
+};
+
 type FolderColorSuggestion = {
   type: FolderColorRuleType;
   target: string;
@@ -246,9 +289,16 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private colorGroups: GraphColorGroup[] = [];
   private combinedFolderPathsByNodeId = new Map<string, string[]>();
   private nodePluginColorsById = new Map<string, GraphColor>();
+  private iWorkPackageFileRecords = new Map<string, IWorkPackageFileRecord>();
+  private patchedAdapter: PatchableAdapter | null = null;
+  private originalAdapterList: DataAdapter["list"] | null = null;
+  private originalAdapterStat: DataAdapter["stat"] | null = null;
+  private patchedAdapterList: DataAdapter["list"] | null = null;
+  private patchedAdapterStat: DataAdapter["stat"] | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    this.refreshIWorkPackageFileSupport(false);
     await this.loadBundledFolder2GraphIfNeeded();
     await this.refreshColorGroups();
     this.addSettingTab(new FolderAndGraphsPlusSettingTab(this.app, this));
@@ -265,6 +315,14 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       })
     );
 
+    const refreshIWorkPackages = (): void => {
+      this.refreshIWorkPackageFileSupport();
+    };
+
+    this.registerEvent(this.app.vault.on("create", refreshIWorkPackages));
+    this.registerEvent(this.app.vault.on("rename", refreshIWorkPackages));
+    this.registerEvent(this.app.vault.on("delete", refreshIWorkPackages));
+
     this.registerInterval(
       window.setInterval(() => {
         void this.refreshColorGroups().then(() => this.refreshGraphLeaves(false));
@@ -272,7 +330,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     );
 
     this.refreshGraphLeaves();
-    if (this.settings.combineSameNameFolders) {
+    if (this.settings.combineSameNameFolders || this.settings.graphFilters.enabled) {
       this.refreshGraphsAfterSettingsChange();
     }
   }
@@ -290,6 +348,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     this.restoreAllGraphLabelStyles();
     this.restoreGraphNodeRenderMethods();
     this.restoreGraphLinkRenderMethods();
+    this.restoreIWorkPackageFileSupport(false);
     this.patchedPrototype = null;
     this.originalGetFillColor = null;
     this.patchedGetFillColor = null;
@@ -1037,12 +1096,20 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private ensureGraphDataPatch(leaf: GraphLeaf, controller: GraphLeafController): void {
     const renderer = leaf.view?.renderer;
     controller.dataPatch = installGraphDataPatch(controller.dataPatch, renderer, (data) => {
+      const iWorkData = this.settings.iWorkPackages.enabled
+        ? normalizeIWorkPackageGraphData(data, (nodeId, node) => this.isFolderNode(nodeId, node)) as GraphData
+        : data;
       const nextData = this.settings.combineSameNameFolders
-        ? this.mergeSameNameFolderNodes(data)
-        : this.rememberSeparateFolderPaths(data);
+        ? this.mergeSameNameFolderNodes(iWorkData)
+        : this.rememberSeparateFolderPaths(iWorkData);
+      const filteredData = applyGraphFilters(
+        nextData,
+        this.settings.graphFilters,
+        (nodeId, node) => this.isFolderNode(nodeId, node)
+      ) as GraphData;
 
-      this.rememberNodePluginColors(nextData);
-      return nextData;
+      this.rememberNodePluginColors(filteredData);
+      return filteredData;
     });
   }
 
@@ -1072,6 +1139,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private reloadGraphLeaf(leaf: GraphLeaf): void {
     const view = leaf.view;
     const options = view?.dataEngine?.getOptions?.();
+    this.ensureGraphLeafController(leaf);
     view?.renderer?.changed?.();
     view?.unload?.();
     view?.load?.();
@@ -1229,7 +1297,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         typeof raw.showFolderEmoji === "boolean"
           ? raw.showFolderEmoji
           : DEFAULT_SETTINGS.showFolderEmoji,
-      graphFilters: normalizeGraphFilterSettings(undefined),
+      iWorkPackages: normalizeIWorkPackageSettings(raw.iWorkPackages),
+      graphFilters: normalizeGraphFilterSettings(raw.graphFilters),
       folderColorRules: this.parseFolderColorRules(raw.folderColorRules, raw.combinedFolderColorOverrides),
       folder2graph: this.parseFolder2GraphSettings(raw.folder2graph)
     };
@@ -1329,6 +1398,211 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
   private parseFolder2GraphSettings(value: unknown): Folder2GraphSettings {
     return typeof value === "object" && value !== null ? { ...(value as Folder2GraphSettings) } : {};
+  }
+
+  refreshIWorkPackageFileSupport(refreshViews = true): void {
+    if (!this.settings.iWorkPackages.enabled) {
+      this.restoreIWorkPackageFileSupport(refreshViews);
+      return;
+    }
+
+    this.installIWorkPackageAdapterPatch();
+    this.markLoadedIWorkPackagesAsFiles();
+    if (refreshViews) {
+      this.refreshFileExplorerLeaves();
+      this.refreshGraphsAfterSettingsChange();
+    }
+  }
+
+  private installIWorkPackageAdapterPatch(): void {
+    const adapter = this.app.vault.adapter as PatchableAdapter;
+    if (this.patchedAdapter === adapter && adapter.list === this.patchedAdapterList && adapter.stat === this.patchedAdapterStat) {
+      return;
+    }
+
+    this.restoreIWorkPackageAdapterPatch();
+
+    const originalList = adapter.list;
+    const originalStat = adapter.stat;
+    const patchedList: DataAdapter["list"] = async (normalizedPath: string): Promise<ListedFiles> => {
+      const listed = await originalList.call(adapter, normalizedPath);
+      return moveIWorkPackagesFromFolderList(listed);
+    };
+    const patchedStat: DataAdapter["stat"] = async (normalizedPath: string): Promise<Stat | null> => {
+      const stat = await originalStat.call(adapter, normalizedPath);
+      if (stat && stat.type === "folder" && isIWorkPackagePath(normalizedPath)) {
+        return { ...stat, type: "file" };
+      }
+
+      return stat;
+    };
+
+    adapter.list = patchedList;
+    adapter.stat = patchedStat;
+    this.patchedAdapter = adapter;
+    this.originalAdapterList = originalList;
+    this.originalAdapterStat = originalStat;
+    this.patchedAdapterList = patchedList;
+    this.patchedAdapterStat = patchedStat;
+  }
+
+  private restoreIWorkPackageFileSupport(refreshViews = true): void {
+    this.restoreLoadedIWorkPackageFiles();
+    this.restoreIWorkPackageAdapterPatch();
+    if (refreshViews) {
+      this.refreshFileExplorerLeaves();
+      this.refreshGraphsAfterSettingsChange();
+    }
+  }
+
+  private restoreIWorkPackageAdapterPatch(): void {
+    if (this.patchedAdapter) {
+      if (this.originalAdapterList && this.patchedAdapter.list === this.patchedAdapterList) {
+        this.patchedAdapter.list = this.originalAdapterList;
+      }
+      if (this.originalAdapterStat && this.patchedAdapter.stat === this.patchedAdapterStat) {
+        this.patchedAdapter.stat = this.originalAdapterStat;
+      }
+    }
+
+    this.patchedAdapter = null;
+    this.originalAdapterList = null;
+    this.originalAdapterStat = null;
+    this.patchedAdapterList = null;
+    this.patchedAdapterStat = null;
+  }
+
+  private markLoadedIWorkPackagesAsFiles(): void {
+    this.reconcileIWorkPackageFileRecords();
+
+    for (const file of this.app.vault.getAllLoadedFiles()) {
+      if (!(file instanceof TFolder) || file.isRoot() || !isIWorkPackagePath(file.path)) {
+        continue;
+      }
+
+      this.markIWorkPackageFolderAsFile(file);
+    }
+  }
+
+  private markIWorkPackageFolderAsFile(folder: TFolder): void {
+    if (this.iWorkPackageFileRecords.has(folder.path)) {
+      return;
+    }
+
+    const target = folder as TAbstractFile & {
+      basename?: unknown;
+      extension?: unknown;
+      stat?: unknown;
+      children?: TAbstractFile[];
+    };
+    const extension = getPathExtension(folder.path);
+    const basename = extension.length > 0
+      ? folder.name.slice(0, -(extension.length + 1))
+      : folder.name;
+    const fallbackStat: FileStats = {
+      ctime: Date.now(),
+      mtime: Date.now(),
+      size: 0
+    };
+
+    this.iWorkPackageFileRecords.set(folder.path, {
+      file: folder,
+      originalPrototype: Object.getPrototypeOf(folder),
+      originalChildren: folder.children,
+      hadBasename: Object.prototype.hasOwnProperty.call(target, "basename"),
+      basename: target.basename,
+      hadExtension: Object.prototype.hasOwnProperty.call(target, "extension"),
+      extension: target.extension,
+      hadStat: Object.prototype.hasOwnProperty.call(target, "stat"),
+      stat: target.stat
+    });
+
+    Object.setPrototypeOf(folder, TFile.prototype);
+    Reflect.deleteProperty(target, "children");
+    target.basename = basename;
+    target.extension = extension;
+    target.stat = this.toFileStats(target.stat) ?? fallbackStat;
+
+    void this.app.vault.adapter.stat(folder.path).then((stat) => {
+      const record = this.iWorkPackageFileRecords.get(folder.path);
+      if (record?.file === folder && stat) {
+        target.stat = this.toFileStats(stat) ?? target.stat;
+      }
+    });
+  }
+
+  private restoreLoadedIWorkPackageFiles(): void {
+    for (const [path, record] of this.iWorkPackageFileRecords.entries()) {
+      this.restoreIWorkPackageFileRecord(path, record);
+    }
+
+    this.iWorkPackageFileRecords.clear();
+  }
+
+  private reconcileIWorkPackageFileRecords(): void {
+    for (const [path, record] of [...this.iWorkPackageFileRecords.entries()]) {
+      const currentPath = record.file.path;
+      const currentFile = this.app.vault.getAbstractFileByPath(currentPath);
+      if (currentFile !== record.file || !isIWorkPackagePath(currentPath)) {
+        this.restoreIWorkPackageFileRecord(path, record);
+        this.iWorkPackageFileRecords.delete(path);
+      } else if (path !== currentPath) {
+        this.iWorkPackageFileRecords.delete(path);
+        this.iWorkPackageFileRecords.set(currentPath, record);
+      }
+    }
+  }
+
+  private restoreIWorkPackageFileRecord(path: string, record: IWorkPackageFileRecord): void {
+    const target = record.file as TAbstractFile & {
+      basename?: unknown;
+      extension?: unknown;
+      stat?: unknown;
+      children?: TAbstractFile[];
+    };
+
+    Object.setPrototypeOf(record.file, record.originalPrototype);
+    target.children = record.originalChildren;
+    this.restoreOptionalProperty(target, "basename", record.hadBasename, record.basename);
+    this.restoreOptionalProperty(target, "extension", record.hadExtension, record.extension);
+    this.restoreOptionalProperty(target, "stat", record.hadStat, record.stat);
+    this.iWorkPackageFileRecords.delete(path);
+  }
+
+  private restoreOptionalProperty(
+    target: object,
+    key: string,
+    hadProperty: boolean,
+    value: unknown
+  ): void {
+    if (hadProperty) {
+      Reflect.set(target, key, value);
+    } else {
+      Reflect.deleteProperty(target, key);
+    }
+  }
+
+  private toFileStats(value: unknown): FileStats | null {
+    if (typeof value !== "object" || value === null) {
+      return null;
+    }
+
+    const stat = value as Partial<FileStats>;
+    return {
+      ctime: typeof stat.ctime === "number" ? stat.ctime : Date.now(),
+      mtime: typeof stat.mtime === "number" ? stat.mtime : Date.now(),
+      size: typeof stat.size === "number" ? stat.size : 0
+    };
+  }
+
+  private refreshFileExplorerLeaves(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType("file-explorer")) {
+      const view = leaf.view as FileExplorerLike | undefined;
+      view?.requestRefresh?.();
+      view?.refresh?.();
+      view?.requestSort?.();
+      view?.update?.();
+    }
   }
 
   refreshGraphsAfterSettingsChange(): void {
@@ -1503,6 +1777,71 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
             this.plugin.settings.showFolderEmoji = value;
             await this.plugin.saveSettings();
             this.plugin.refreshGraphsAfterSettingsChange();
+          });
+      });
+
+    new Setting(containerEl).setName("File type support").setHeading();
+
+    new Setting(containerEl)
+      .setName("Recognise iWork packages as files")
+      .setDesc("Treat .pages, .key, and .numbers packages as file attachments instead of folders in File Explorer and Graph View.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.iWorkPackages.enabled)
+          .onChange(async (value) => {
+            this.plugin.settings.iWorkPackages.enabled = value;
+            await this.plugin.saveSettings();
+            this.plugin.refreshIWorkPackageFileSupport();
+            this.renderSettings();
+          });
+      });
+
+    new Setting(containerEl).setName("Attachment filtering").setHeading();
+
+    new Setting(containerEl)
+      .setName("Enable attachment filtering")
+      .setDesc("Filter attachment nodes from Graph View by file extension.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.graphFilters.enabled)
+          .onChange(async (value) => {
+            this.plugin.settings.graphFilters.enabled = value;
+            await this.saveAndRefresh();
+            this.renderSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Attachment extension mode")
+      .setDesc("Choose whether the extension list is removed from Graph View or is the only attachment list shown.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("hide-custom", "Hide listed extensions")
+          .addOption("custom", "Show only listed extensions")
+          .setValue(
+            this.plugin.settings.graphFilters.attachmentMode === "custom"
+              ? "custom"
+              : "hide-custom"
+          )
+          .onChange(async (value) => {
+            this.plugin.settings.graphFilters.attachmentMode = value === "custom" ? "custom" : "hide-custom";
+            await this.saveAndRefresh();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Attachment extensions")
+      .setDesc("Comma or space separated extensions, such as .jpg, .png, pdf.")
+      .addText((text) => {
+        text
+          .setPlaceholder(".jpg, .png, .pdf")
+          .setValue(this.plugin.settings.graphFilters.attachmentExtensions.join(", "))
+          .onChange(async (value) => {
+            this.plugin.settings.graphFilters.attachmentExtensions = normalizeGraphFilterSettings({
+              ...this.plugin.settings.graphFilters,
+              attachmentExtensions: value
+            }).attachmentExtensions;
+            await this.saveAndRefresh();
           });
       });
 

@@ -1,4 +1,11 @@
-export type GraphFilterAttachmentMode = "all" | "pdf" | "documents" | "hide-media" | "custom" | "none";
+export type GraphFilterAttachmentMode =
+  | "all"
+  | "pdf"
+  | "documents"
+  | "hide-media"
+  | "custom"
+  | "hide-custom"
+  | "none";
 
 export type GraphFilterAttachmentFolderRule = {
   type: "folder" | "combined";
@@ -35,8 +42,8 @@ export const DEFAULT_GRAPH_FILTER_SETTINGS: GraphFilterSettings = {
   showFolders: true,
   showTags: true,
   showCanvases: true,
-  attachmentMode: "all",
-  attachmentExtensions: ["pdf"],
+  attachmentMode: "hide-custom",
+  attachmentExtensions: [],
   attachmentFolderRules: [],
   hideOrphans: false
 };
@@ -105,7 +112,6 @@ export function normalizeGraphFilterSettings(value: unknown): GraphFilterSetting
     hideOrphans: typeof raw.hideOrphans === "boolean" ? raw.hideOrphans : DEFAULT_GRAPH_FILTER_SETTINGS.hideOrphans
   };
 
-  settings.enabled = settings.enabled || areGraphFiltersActive(settings);
   return settings;
 }
 
@@ -163,6 +169,13 @@ export function shouldShowGraphNode(
   settings: GraphFilterSettings,
   isFolderNode: (nodeId: string, node: GraphFilterNode | undefined) => boolean
 ): boolean {
+  const folderNode = isFolderNode(nodeId, node);
+  const extension = folderNode ? getFirstPathSegmentExtension(nodeId) : getNodeExtension(nodeId);
+
+  if (folderNode && extension) {
+    return settings.showFolders && shouldShowAttachmentExtension(extension, settings) && shouldShowAttachmentFolder(nodeId, settings);
+  }
+
   if (isFolderNode(nodeId, node)) {
     return settings.showFolders;
   }
@@ -171,7 +184,6 @@ export function shouldShowGraphNode(
     return settings.showTags;
   }
 
-  const extension = getNodeExtension(nodeId);
   if (extension === "md" || extension === "") {
     return settings.showNotes;
   }
@@ -202,7 +214,7 @@ export function normalizeAttachmentExtensions(value: unknown): string[] {
     }
   }
 
-  return unique.size > 0 ? [...unique].sort() : [...DEFAULT_GRAPH_FILTER_SETTINGS.attachmentExtensions];
+  return [...unique].sort();
 }
 
 export function shouldShowAttachmentExtension(extension: string, settings: GraphFilterSettings): boolean {
@@ -217,6 +229,8 @@ export function shouldShowAttachmentExtension(extension: string, settings: Graph
       return !(MEDIA_ATTACHMENT_EXTENSIONS as readonly string[]).includes(extension);
     case "custom":
       return settings.attachmentExtensions.includes(extension);
+    case "hide-custom":
+      return !settings.attachmentExtensions.includes(extension);
     case "none":
       return false;
   }
@@ -282,6 +296,7 @@ function normalizeAttachmentMode(value: unknown): GraphFilterAttachmentMode {
     value === "documents" ||
     value === "hide-media" ||
     value === "custom" ||
+    value === "hide-custom" ||
     value === "none"
   ) {
     return value;
@@ -330,12 +345,24 @@ function getNodeExtension(nodeId: string): string {
   return dotIndex > 0 ? basename.slice(dotIndex + 1).toLowerCase() : "";
 }
 
+function getFirstPathSegmentExtension(nodeId: string): string {
+  const path = normalizeVaultPath(nodeId.split("#")[0].split("?")[0]);
+  for (const segment of path.split("/")) {
+    const dotIndex = segment.lastIndexOf(".");
+    if (dotIndex > 0 && dotIndex < segment.length - 1) {
+      return segment.slice(dotIndex + 1).toLowerCase();
+    }
+  }
+
+  return "";
+}
+
 function filterNodeLinks(
   links: Record<string, unknown> | undefined,
   keptNodeIds: ReadonlySet<string>
-): Record<string, unknown> | undefined {
+): Record<string, unknown> {
   if (!links) {
-    return links;
+    return {};
   }
 
   const filteredLinks: Record<string, unknown> = {};
@@ -345,7 +372,7 @@ function filterNodeLinks(
     }
   }
 
-  return Object.keys(filteredLinks).length > 0 ? filteredLinks : undefined;
+  return filteredLinks;
 }
 
 function removeOrphanNodeIds(

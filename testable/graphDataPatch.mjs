@@ -14,12 +14,19 @@ function installGraphDataPatch(existingPatch, renderer, transform) {
   }
   restoreGraphDataPatch(existingPatch);
   const entries = [];
+  const nativeSetData = typeof renderer.originalSetData === "function" ? renderer.originalSetData : void 0;
   for (const key of keys) {
     const original = renderer[key];
     if (typeof original !== "function") {
       continue;
     }
-    const wrapper = (data) => original.call(renderer, transform(data));
+    const wrapper = (data) => {
+      const nextData = transform(data);
+      if (key === "setData" && !hasGraphNodes(nextData) && typeof nativeSetData === "function") {
+        return nativeSetData.call(renderer, nextData);
+      }
+      return original.call(renderer, nextData);
+    };
     renderer[key] = wrapper;
     entries.push({ key, original, wrapper });
   }
@@ -54,6 +61,9 @@ function getGraphDataPatchKeys(renderer) {
     keys.push("setData");
   }
   return keys;
+}
+function hasGraphNodes(data) {
+  return typeof data === "object" && data !== null && typeof data.nodes === "object" && data.nodes !== null;
 }
 export {
   installGraphDataPatch,

@@ -5,8 +5,8 @@ var DEFAULT_GRAPH_FILTER_SETTINGS = {
   showFolders: true,
   showTags: true,
   showCanvases: true,
-  attachmentMode: "all",
-  attachmentExtensions: ["pdf"],
+  attachmentMode: "hide-custom",
+  attachmentExtensions: [],
   attachmentFolderRules: [],
   hideOrphans: false
 };
@@ -69,7 +69,6 @@ function normalizeGraphFilterSettings(value) {
     attachmentFolderRules: normalizeAttachmentFolderRules(raw.attachmentFolderRules),
     hideOrphans: typeof raw.hideOrphans === "boolean" ? raw.hideOrphans : DEFAULT_GRAPH_FILTER_SETTINGS.hideOrphans
   };
-  settings.enabled = settings.enabled || areGraphFiltersActive(settings);
   return settings;
 }
 function areGraphFiltersActive(settings) {
@@ -102,13 +101,17 @@ function applyGraphFilters(data, settings, isFolderNode) {
   return { ...data, nodes };
 }
 function shouldShowGraphNode(nodeId, node, settings, isFolderNode) {
-  if (isFolderNode(nodeId, node)) {
+  const folderNode = isFolderNode(nodeId, node);
+  const extension = folderNode ? getFirstPathSegmentExtension(nodeId) : getNodeExtension(nodeId);
+  if (folderNode && extension) {
+    return settings.showFolders && shouldShowAttachmentExtension(extension, settings) && shouldShowAttachmentFolder(nodeId, settings);
+  }
+  if (folderNode) {
     return settings.showFolders;
   }
   if (node?.type === "tag" || nodeId.startsWith("#")) {
     return settings.showTags;
   }
-  const extension = getNodeExtension(nodeId);
   if (extension === "md" || extension === "") {
     return settings.showNotes;
   }
@@ -129,7 +132,7 @@ function normalizeAttachmentExtensions(value) {
       unique.add(normalized);
     }
   }
-  return unique.size > 0 ? [...unique].sort() : [...DEFAULT_GRAPH_FILTER_SETTINGS.attachmentExtensions];
+  return [...unique].sort();
 }
 function shouldShowAttachmentExtension(extension, settings) {
   switch (settings.attachmentMode) {
@@ -143,6 +146,8 @@ function shouldShowAttachmentExtension(extension, settings) {
       return !MEDIA_ATTACHMENT_EXTENSIONS.includes(extension);
     case "custom":
       return settings.attachmentExtensions.includes(extension);
+    case "hide-custom":
+      return !settings.attachmentExtensions.includes(extension);
     case "none":
       return false;
   }
@@ -185,7 +190,7 @@ function shouldShowAttachmentFolder(nodeId, settings) {
   return settings.attachmentFolderRules.some((rule) => rule.type === "combined" ? folderPathContainsBasename(folderPath, rule.target) : folderPathMatchesPathRule(folderPath, rule.target));
 }
 function normalizeAttachmentMode(value) {
-  if (value === "all" || value === "pdf" || value === "documents" || value === "hide-media" || value === "custom" || value === "none") {
+  if (value === "all" || value === "pdf" || value === "documents" || value === "hide-media" || value === "custom" || value === "hide-custom" || value === "none") {
     return value;
   }
   return value === "selected" ? "custom" : DEFAULT_GRAPH_FILTER_SETTINGS.attachmentMode;
@@ -219,9 +224,19 @@ function getNodeExtension(nodeId) {
   const dotIndex = basename.lastIndexOf(".");
   return dotIndex > 0 ? basename.slice(dotIndex + 1).toLowerCase() : "";
 }
+function getFirstPathSegmentExtension(nodeId) {
+  const path = normalizeVaultPath(nodeId.split("#")[0].split("?")[0]);
+  for (const segment of path.split("/")) {
+    const dotIndex = segment.lastIndexOf(".");
+    if (dotIndex > 0 && dotIndex < segment.length - 1) {
+      return segment.slice(dotIndex + 1).toLowerCase();
+    }
+  }
+  return "";
+}
 function filterNodeLinks(links, keptNodeIds) {
   if (!links) {
-    return links;
+    return {};
   }
   const filteredLinks = {};
   for (const [targetId, value] of Object.entries(links)) {
@@ -229,7 +244,7 @@ function filterNodeLinks(links, keptNodeIds) {
       filteredLinks[targetId] = value;
     }
   }
-  return Object.keys(filteredLinks).length > 0 ? filteredLinks : void 0;
+  return filteredLinks;
 }
 function removeOrphanNodeIds(keptNodeIds, nodes) {
   const linkedNodeIds = /* @__PURE__ */ new Set();
