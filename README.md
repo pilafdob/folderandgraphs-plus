@@ -11,7 +11,7 @@ The plugin can:
 - Bold exact configured folder labels.
 - Add extra attachment and folder filters into the native Graph View filter panel.
 - Display iWork extensions as file types in File Viewer and Graph View 
-- Filter attachments in Graph View by extensions (.pdf, .docx, .png, ...)
+- Filter attachments in Graph View by extension (.pdf, .docx, .png, ...)
 
 ## Installation
 

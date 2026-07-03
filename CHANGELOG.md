@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.0.0
+
+- Add a File type support setting that treats `.pages`, `.key`, and `.numbers` package documents as file attachments instead of folders.
+- Normalize iWork package folder nodes into file nodes in Graph View and remove package internals from rendered graph data.
+- Keep the iWork package shim reversible on disable/unload and refresh File Explorer and Graph View when the setting changes.
+- Add tests for iWork package path detection, adapter list normalization, settings parsing, and graph node conversion.
+
 ## 3.0.2
 
 - Remove the plugin-injected controls from Obsidian's native Graph View Filters panel.
