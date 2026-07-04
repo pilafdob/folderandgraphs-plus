@@ -6,11 +6,9 @@ import {
   TFile,
   TFolder,
   prepareFuzzySearch,
+  getLinkpath,
   type TAbstractFile,
-  type DataAdapter,
   type FileStats,
-  type ListedFiles,
-  type Stat,
   type WorkspaceLeaf
 } from "obsidian";
 import {
@@ -45,7 +43,6 @@ import {
   DEFAULT_IWORK_PACKAGE_SETTINGS,
   getPathExtension,
   isIWorkPackagePath,
-  moveIWorkPackagesFromFolderList,
   normalizeIWorkPackageGraphData,
   normalizeIWorkPackageSettings,
   type IWorkPackageSettings
@@ -241,21 +238,9 @@ type GraphData = {
 
 type Folder2GraphSettings = Record<string, unknown>;
 
-type IWorkPackageFileRecord = {
-  file: TAbstractFile;
-  originalPrototype: object | null;
-  originalChildren: TAbstractFile[];
-  hadBasename: boolean;
-  basename: unknown;
-  hadExtension: boolean;
-  extension: unknown;
-  hadStat: boolean;
-  stat: unknown;
-};
-
-type PatchableAdapter = DataAdapter & {
-  list: DataAdapter["list"];
-  stat: DataAdapter["stat"];
+type IWorkPackageFile = TFile & {
+  __folderAndGraphsPlusIWorkPackageFile: true;
+  __folderAndGraphsPlusPackageFolder: TFolder;
 };
 
 type FileExplorerLike = {
@@ -264,6 +249,15 @@ type FileExplorerLike = {
   requestSort?: () => void;
   update?: () => void;
   containerEl?: HTMLElement;
+};
+
+type PatchableVault = {
+  getFiles: () => TFile[];
+};
+
+type PatchableMetadataCache = {
+  getFirstLinkpathDest: (linkpath: string, sourcePath: string) => TFile | null;
+  fileToLinktext: (file: TFile, sourcePath: string, omitMdExtension?: boolean) => string;
 };
 
 type FolderColorSuggestion = {
@@ -289,12 +283,16 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private colorGroups: GraphColorGroup[] = [];
   private combinedFolderPathsByNodeId = new Map<string, string[]>();
   private nodePluginColorsById = new Map<string, GraphColor>();
-  private iWorkPackageFileRecords = new Map<string, IWorkPackageFileRecord>();
-  private patchedAdapter: PatchableAdapter | null = null;
-  private originalAdapterList: DataAdapter["list"] | null = null;
-  private originalAdapterStat: DataAdapter["stat"] | null = null;
-  private patchedAdapterList: DataAdapter["list"] | null = null;
-  private patchedAdapterStat: DataAdapter["stat"] | null = null;
+  private iWorkPackageFilesByPath = new Map<string, IWorkPackageFile>();
+  private iWorkPackageFilesByBasename = new Map<string, IWorkPackageFile[]>();
+  private patchedVault: PatchableVault | null = null;
+  private originalVaultGetFiles: PatchableVault["getFiles"] | null = null;
+  private patchedVaultGetFiles: PatchableVault["getFiles"] | null = null;
+  private patchedMetadataCache: PatchableMetadataCache | null = null;
+  private originalGetFirstLinkpathDest: PatchableMetadataCache["getFirstLinkpathDest"] | null = null;
+  private patchedGetFirstLinkpathDest: PatchableMetadataCache["getFirstLinkpathDest"] | null = null;
+  private originalFileToLinktext: PatchableMetadataCache["fileToLinktext"] | null = null;
+  private patchedFileToLinktext: PatchableMetadataCache["fileToLinktext"] | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -1406,185 +1404,243 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       return;
     }
 
-    this.installIWorkPackageAdapterPatch();
-    this.markLoadedIWorkPackagesAsFiles();
+    this.installIWorkPackageFilePatches();
+    this.rebuildIWorkPackageFileIndex();
     if (refreshViews) {
       this.refreshFileExplorerLeaves();
       this.refreshGraphsAfterSettingsChange();
     }
   }
 
-  private installIWorkPackageAdapterPatch(): void {
-    const adapter = this.app.vault.adapter as PatchableAdapter;
-    if (this.patchedAdapter === adapter && adapter.list === this.patchedAdapterList && adapter.stat === this.patchedAdapterStat) {
-      return;
-    }
-
-    this.restoreIWorkPackageAdapterPatch();
-
-    const originalList = adapter.list;
-    const originalStat = adapter.stat;
-    const patchedList: DataAdapter["list"] = async (normalizedPath: string): Promise<ListedFiles> => {
-      const listed = await originalList.call(adapter, normalizedPath);
-      return moveIWorkPackagesFromFolderList(listed);
-    };
-    const patchedStat: DataAdapter["stat"] = async (normalizedPath: string): Promise<Stat | null> => {
-      const stat = await originalStat.call(adapter, normalizedPath);
-      if (stat && stat.type === "folder" && isIWorkPackagePath(normalizedPath)) {
-        return { ...stat, type: "file" };
-      }
-
-      return stat;
-    };
-
-    adapter.list = patchedList;
-    adapter.stat = patchedStat;
-    this.patchedAdapter = adapter;
-    this.originalAdapterList = originalList;
-    this.originalAdapterStat = originalStat;
-    this.patchedAdapterList = patchedList;
-    this.patchedAdapterStat = patchedStat;
+  private installIWorkPackageFilePatches(): void {
+    this.installIWorkPackageVaultPatch();
+    this.installIWorkPackageMetadataPatch();
   }
 
   private restoreIWorkPackageFileSupport(refreshViews = true): void {
-    this.restoreLoadedIWorkPackageFiles();
-    this.restoreIWorkPackageAdapterPatch();
+    this.iWorkPackageFilesByPath.clear();
+    this.iWorkPackageFilesByBasename.clear();
+    this.restoreIWorkPackageMetadataPatch();
+    this.restoreIWorkPackageVaultPatch();
     if (refreshViews) {
       this.refreshFileExplorerLeaves();
       this.refreshGraphsAfterSettingsChange();
     }
   }
 
-  private restoreIWorkPackageAdapterPatch(): void {
-    if (this.patchedAdapter) {
-      if (this.originalAdapterList && this.patchedAdapter.list === this.patchedAdapterList) {
-        this.patchedAdapter.list = this.originalAdapterList;
+  private installIWorkPackageVaultPatch(): void {
+    const vault = this.app.vault as PatchableVault;
+    if (this.patchedVault === vault && vault.getFiles === this.patchedVaultGetFiles) {
+      return;
+    }
+
+    this.restoreIWorkPackageVaultPatch();
+
+    const originalGetFiles = vault.getFiles;
+    const getIWorkPackageFiles = (): IWorkPackageFile[] => [...this.iWorkPackageFilesByPath.values()];
+    const patchedGetFiles: PatchableVault["getFiles"] = function folderAndGraphsPlusGetFilesPatch(): TFile[] {
+      const files = originalGetFiles.call(vault);
+      const paths = new Set(files.map((file) => file.path));
+      const packageFiles = getIWorkPackageFiles().filter((file) => !paths.has(file.path));
+      return [...files, ...packageFiles];
+    };
+
+    vault.getFiles = patchedGetFiles;
+    this.patchedVault = vault;
+    this.originalVaultGetFiles = originalGetFiles;
+    this.patchedVaultGetFiles = patchedGetFiles;
+  }
+
+  private restoreIWorkPackageVaultPatch(): void {
+    if (this.patchedVault && this.originalVaultGetFiles && this.patchedVault.getFiles === this.patchedVaultGetFiles) {
+      this.patchedVault.getFiles = this.originalVaultGetFiles;
+    }
+
+    this.patchedVault = null;
+    this.originalVaultGetFiles = null;
+    this.patchedVaultGetFiles = null;
+  }
+
+  private installIWorkPackageMetadataPatch(): void {
+    const metadataCache = this.app.metadataCache as PatchableMetadataCache;
+    if (
+      this.patchedMetadataCache === metadataCache &&
+      metadataCache.getFirstLinkpathDest === this.patchedGetFirstLinkpathDest &&
+      metadataCache.fileToLinktext === this.patchedFileToLinktext
+    ) {
+      return;
+    }
+
+    this.restoreIWorkPackageMetadataPatch();
+
+    const originalGetFirstLinkpathDest = metadataCache.getFirstLinkpathDest;
+    const originalFileToLinktext = metadataCache.fileToLinktext;
+    const resolveIWorkPackageLinkpath = this.resolveIWorkPackageLinkpath.bind(this);
+    const isSyntheticIWorkPackageFile = this.isSyntheticIWorkPackageFile.bind(this);
+
+    const patchedGetFirstLinkpathDest: PatchableMetadataCache["getFirstLinkpathDest"] =
+      function folderAndGraphsPlusGetFirstLinkpathDestPatch(
+        linkpath: string,
+        sourcePath: string
+      ): TFile | null {
+        return (
+          originalGetFirstLinkpathDest.call(metadataCache, linkpath, sourcePath) ??
+          resolveIWorkPackageLinkpath(linkpath, sourcePath)
+        );
+      };
+
+    const patchedFileToLinktext: PatchableMetadataCache["fileToLinktext"] =
+      function folderAndGraphsPlusFileToLinktextPatch(
+        file: TFile,
+        sourcePath: string,
+        omitMdExtension?: boolean
+      ): string {
+        if (isSyntheticIWorkPackageFile(file)) {
+          return file.path;
+        }
+
+        return originalFileToLinktext.call(metadataCache, file, sourcePath, omitMdExtension);
+      };
+
+    metadataCache.getFirstLinkpathDest = patchedGetFirstLinkpathDest;
+    metadataCache.fileToLinktext = patchedFileToLinktext;
+    this.patchedMetadataCache = metadataCache;
+    this.originalGetFirstLinkpathDest = originalGetFirstLinkpathDest;
+    this.patchedGetFirstLinkpathDest = patchedGetFirstLinkpathDest;
+    this.originalFileToLinktext = originalFileToLinktext;
+    this.patchedFileToLinktext = patchedFileToLinktext;
+  }
+
+  private restoreIWorkPackageMetadataPatch(): void {
+    if (this.patchedMetadataCache) {
+      if (
+        this.originalGetFirstLinkpathDest &&
+        this.patchedMetadataCache.getFirstLinkpathDest === this.patchedGetFirstLinkpathDest
+      ) {
+        this.patchedMetadataCache.getFirstLinkpathDest = this.originalGetFirstLinkpathDest;
       }
-      if (this.originalAdapterStat && this.patchedAdapter.stat === this.patchedAdapterStat) {
-        this.patchedAdapter.stat = this.originalAdapterStat;
+      if (
+        this.originalFileToLinktext &&
+        this.patchedMetadataCache.fileToLinktext === this.patchedFileToLinktext
+      ) {
+        this.patchedMetadataCache.fileToLinktext = this.originalFileToLinktext;
       }
     }
 
-    this.patchedAdapter = null;
-    this.originalAdapterList = null;
-    this.originalAdapterStat = null;
-    this.patchedAdapterList = null;
-    this.patchedAdapterStat = null;
+    this.patchedMetadataCache = null;
+    this.originalGetFirstLinkpathDest = null;
+    this.patchedGetFirstLinkpathDest = null;
+    this.originalFileToLinktext = null;
+    this.patchedFileToLinktext = null;
   }
 
-  private markLoadedIWorkPackagesAsFiles(): void {
-    this.reconcileIWorkPackageFileRecords();
+  private rebuildIWorkPackageFileIndex(): void {
+    const packageFilesByPath = new Map<string, IWorkPackageFile>();
+    const packageFilesByBasename = new Map<string, IWorkPackageFile[]>();
 
     for (const file of this.app.vault.getAllLoadedFiles()) {
       if (!(file instanceof TFolder) || file.isRoot() || !isIWorkPackagePath(file.path)) {
         continue;
       }
 
-      this.markIWorkPackageFolderAsFile(file);
+      const packageFile = this.createIWorkPackageFile(file);
+      packageFilesByPath.set(packageFile.path, packageFile);
+      const basenameMatches = packageFilesByBasename.get(packageFile.basename) ?? [];
+      basenameMatches.push(packageFile);
+      packageFilesByBasename.set(packageFile.basename, basenameMatches);
     }
+
+    for (const matches of packageFilesByBasename.values()) {
+      matches.sort((a, b) => a.path.localeCompare(b.path));
+    }
+
+    this.iWorkPackageFilesByPath = packageFilesByPath;
+    this.iWorkPackageFilesByBasename = packageFilesByBasename;
   }
 
-  private markIWorkPackageFolderAsFile(folder: TFolder): void {
-    if (this.iWorkPackageFileRecords.has(folder.path)) {
-      return;
-    }
-
-    const target = folder as TAbstractFile & {
-      basename?: unknown;
-      extension?: unknown;
-      stat?: unknown;
-      children?: TAbstractFile[];
-    };
+  private createIWorkPackageFile(folder: TFolder): IWorkPackageFile {
     const extension = getPathExtension(folder.path);
     const basename = extension.length > 0
       ? folder.name.slice(0, -(extension.length + 1))
       : folder.name;
-    const fallbackStat: FileStats = {
-      ctime: Date.now(),
-      mtime: Date.now(),
-      size: 0
-    };
+    const folderStat = (folder as Partial<{ stat: unknown }>).stat;
+    const file = Object.create(TFile.prototype) as IWorkPackageFile;
 
-    this.iWorkPackageFileRecords.set(folder.path, {
-      file: folder,
-      originalPrototype: Object.getPrototypeOf(folder),
-      originalChildren: folder.children,
-      hadBasename: Object.prototype.hasOwnProperty.call(target, "basename"),
-      basename: target.basename,
-      hadExtension: Object.prototype.hasOwnProperty.call(target, "extension"),
-      extension: target.extension,
-      hadStat: Object.prototype.hasOwnProperty.call(target, "stat"),
-      stat: target.stat
-    });
-
-    Object.setPrototypeOf(folder, TFile.prototype);
-    Reflect.deleteProperty(target, "children");
-    target.basename = basename;
-    target.extension = extension;
-    target.stat = this.toFileStats(target.stat) ?? fallbackStat;
+    file.vault = this.app.vault;
+    file.path = folder.path;
+    file.name = folder.name;
+    file.parent = folder.parent;
+    file.basename = basename;
+    file.extension = extension;
+    file.stat = this.toFileStats(folderStat);
+    file.__folderAndGraphsPlusIWorkPackageFile = true;
+    file.__folderAndGraphsPlusPackageFolder = folder;
 
     void this.app.vault.adapter.stat(folder.path).then((stat) => {
-      const record = this.iWorkPackageFileRecords.get(folder.path);
-      if (record?.file === folder && stat) {
-        target.stat = this.toFileStats(stat) ?? target.stat;
+      const current = this.iWorkPackageFilesByPath.get(folder.path);
+      if (current?.__folderAndGraphsPlusPackageFolder === folder && stat) {
+        current.stat = this.toFileStats(stat);
       }
     });
+
+    return file;
   }
 
-  private restoreLoadedIWorkPackageFiles(): void {
-    for (const [path, record] of this.iWorkPackageFileRecords.entries()) {
-      this.restoreIWorkPackageFileRecord(path, record);
+  private resolveIWorkPackageLinkpath(linkpath: string, sourcePath: string): IWorkPackageFile | null {
+    const normalizedLinkpath = this.normalizeIWorkPackageLinkpath(linkpath);
+    if (!normalizedLinkpath) {
+      return null;
     }
 
-    this.iWorkPackageFileRecords.clear();
-  }
+    const exact = this.iWorkPackageFilesByPath.get(normalizedLinkpath);
+    if (exact) {
+      return exact;
+    }
 
-  private reconcileIWorkPackageFileRecords(): void {
-    for (const [path, record] of [...this.iWorkPackageFileRecords.entries()]) {
-      const currentPath = record.file.path;
-      const currentFile = this.app.vault.getAbstractFileByPath(currentPath);
-      if (currentFile !== record.file || !isIWorkPackagePath(currentPath)) {
-        this.restoreIWorkPackageFileRecord(path, record);
-        this.iWorkPackageFileRecords.delete(path);
-      } else if (path !== currentPath) {
-        this.iWorkPackageFileRecords.delete(path);
-        this.iWorkPackageFileRecords.set(currentPath, record);
+    const sourceFolder = this.getSourceFolderPath(sourcePath);
+    if (sourceFolder) {
+      const relative = this.iWorkPackageFilesByPath.get(`${sourceFolder}/${normalizedLinkpath}`);
+      if (relative) {
+        return relative;
       }
     }
+
+    const basename = this.getIWorkLinkBasename(normalizedLinkpath);
+    const matches = this.iWorkPackageFilesByBasename.get(basename) ?? [];
+    return matches.length === 1 ? matches[0] : null;
   }
 
-  private restoreIWorkPackageFileRecord(path: string, record: IWorkPackageFileRecord): void {
-    const target = record.file as TAbstractFile & {
-      basename?: unknown;
-      extension?: unknown;
-      stat?: unknown;
-      children?: TAbstractFile[];
-    };
-
-    Object.setPrototypeOf(record.file, record.originalPrototype);
-    target.children = record.originalChildren;
-    this.restoreOptionalProperty(target, "basename", record.hadBasename, record.basename);
-    this.restoreOptionalProperty(target, "extension", record.hadExtension, record.extension);
-    this.restoreOptionalProperty(target, "stat", record.hadStat, record.stat);
-    this.iWorkPackageFileRecords.delete(path);
+  private normalizeIWorkPackageLinkpath(linkpath: string): string {
+    return getLinkpath(linkpath)
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, "")
+      .replace(/\/+$/, "");
   }
 
-  private restoreOptionalProperty(
-    target: object,
-    key: string,
-    hadProperty: boolean,
-    value: unknown
-  ): void {
-    if (hadProperty) {
-      Reflect.set(target, key, value);
-    } else {
-      Reflect.deleteProperty(target, key);
-    }
+  private getSourceFolderPath(sourcePath: string): string {
+    const normalizedSourcePath = sourcePath.replace(/\\/g, "/");
+    const slashIndex = normalizedSourcePath.lastIndexOf("/");
+    return slashIndex >= 0 ? normalizedSourcePath.slice(0, slashIndex) : "";
   }
 
-  private toFileStats(value: unknown): FileStats | null {
+  private getIWorkLinkBasename(path: string): string {
+    const slashIndex = path.lastIndexOf("/");
+    const name = slashIndex >= 0 ? path.slice(slashIndex + 1) : path;
+    const extension = getPathExtension(name);
+    return extension.length > 0 ? name.slice(0, -(extension.length + 1)) : name;
+  }
+
+  private isSyntheticIWorkPackageFile(file: TFile): file is IWorkPackageFile {
+    return (file as Partial<IWorkPackageFile>).__folderAndGraphsPlusIWorkPackageFile === true;
+  }
+
+  private toFileStats(value: unknown): FileStats {
     if (typeof value !== "object" || value === null) {
-      return null;
+      return {
+        ctime: Date.now(),
+        mtime: Date.now(),
+        size: 0
+      };
     }
 
     const stat = value as Partial<FileStats>;

@@ -1,11 +1,17 @@
 # Changelog
 
+## 4.0.1
+
+- Fix iWork package documents disappearing after enabling file type support.
+- Stop patching the vault adapter and mutating loaded package folders into `TFile` objects.
+- Expose `.pages`, `.key`, and `.numbers` packages through Obsidian's file/link APIs with synthetic file records while keeping the real vault folder tree intact.
+
 ## 4.0.0
 
 - Add a File type support setting that treats `.pages`, `.key`, and `.numbers` package documents as file attachments instead of folders.
 - Normalize iWork package folder nodes into file nodes in Graph View and remove package internals from rendered graph data.
-- Keep the iWork package shim reversible on disable/unload and refresh File Explorer and Graph View when the setting changes.
-- Add tests for iWork package path detection, adapter list normalization, settings parsing, and graph node conversion.
+- Keep the iWork package support reversible on disable/unload and refresh File Explorer and Graph View when the setting changes.
+- Add tests for iWork package path detection, settings parsing, and graph node conversion.
 
 ## 3.0.2
 

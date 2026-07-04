@@ -14,11 +14,6 @@ export type IWorkGraphData = {
   [key: string]: unknown;
 };
 
-export type ListedPaths = {
-  files: string[];
-  folders: string[];
-};
-
 export const IWORK_PACKAGE_EXTENSIONS = ["key", "numbers", "pages"] as const;
 
 export const DEFAULT_IWORK_PACKAGE_SETTINGS: IWorkPackageSettings = {
@@ -38,25 +33,6 @@ export function normalizeIWorkPackageSettings(value: unknown): IWorkPackageSetti
 
 export function isIWorkPackagePath(path: string): boolean {
   return (IWORK_PACKAGE_EXTENSIONS as readonly string[]).includes(getPathExtension(path));
-}
-
-export function moveIWorkPackagesFromFolderList(listed: ListedPaths): ListedPaths {
-  const files = new Set(listed.files);
-  const folders: string[] = [];
-
-  for (const folder of listed.folders) {
-    if (isIWorkPackagePath(folder)) {
-      files.add(folder);
-    } else {
-      folders.push(folder);
-    }
-  }
-
-  return {
-    ...listed,
-    files: [...files],
-    folders
-  };
 }
 
 export function normalizeIWorkPackageGraphData(

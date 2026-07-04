@@ -5,7 +5,6 @@ import {
   DEFAULT_IWORK_PACKAGE_SETTINGS,
   getPathExtension,
   isIWorkPackagePath,
-  moveIWorkPackagesFromFolderList,
   normalizeIWorkPackageGraphData,
   normalizeIWorkPackageSettings
 } from "../testable/iworkPackages.mjs";
@@ -24,24 +23,6 @@ test("iWork package settings default off unless explicitly enabled", () => {
   assert.deepEqual(normalizeIWorkPackageSettings(undefined), DEFAULT_IWORK_PACKAGE_SETTINGS);
   assert.deepEqual(normalizeIWorkPackageSettings({ enabled: true }), { enabled: true });
   assert.deepEqual(normalizeIWorkPackageSettings({ enabled: "yes" }), { enabled: false });
-});
-
-test("adapter folder lists expose iWork packages as files", () => {
-  assert.deepEqual(moveIWorkPackagesFromFolderList({
-    files: ["English/common mistakes.pdf"],
-    folders: [
-      "English/report.pages",
-      "English/slides.key",
-      "English/schoolwork"
-    ]
-  }), {
-    files: [
-      "English/common mistakes.pdf",
-      "English/report.pages",
-      "English/slides.key"
-    ],
-    folders: ["English/schoolwork"]
-  });
 });
 
 test("graph package folder nodes are converted to attachment file nodes", () => {

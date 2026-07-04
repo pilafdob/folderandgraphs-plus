@@ -14,22 +14,6 @@ function normalizeIWorkPackageSettings(value) {
 function isIWorkPackagePath(path) {
   return IWORK_PACKAGE_EXTENSIONS.includes(getPathExtension(path));
 }
-function moveIWorkPackagesFromFolderList(listed) {
-  const files = new Set(listed.files);
-  const folders = [];
-  for (const folder of listed.folders) {
-    if (isIWorkPackagePath(folder)) {
-      files.add(folder);
-    } else {
-      folders.push(folder);
-    }
-  }
-  return {
-    ...listed,
-    files: [...files],
-    folders
-  };
-}
 function normalizeIWorkPackageGraphData(data, isFolderNode) {
   if (!data.nodes) {
     return data;
@@ -117,7 +101,6 @@ export {
   IWORK_PACKAGE_EXTENSIONS,
   getPathExtension,
   isIWorkPackagePath,
-  moveIWorkPackagesFromFolderList,
   normalizeIWorkPackageGraphData,
   normalizeIWorkPackageSettings
 };
