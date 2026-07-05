@@ -54,13 +54,49 @@ import Folder2GraphPlugin from "./vendor/folders2graph/main";
 const FOLDER2GRAPH_NODE_TYPE = "f2g_node";
 const DEFAULT_FOLDER_RULE_COLOR = "#5c8af5";
 
+type Folder2GraphHeadingLinkAnchorMode =
+  | "file-file"
+  | "file-heading"
+  | "heading-file"
+  | "heading-heading";
+
+type Folder2GraphFolderFilterMode = "exclude" | "include";
+
+type Folder2GraphSettings = {
+  showFolderNodes: boolean;
+  hideRootNode: boolean;
+  nodeColor: string;
+  showHeadingNodes: boolean;
+  headingNodeColor: string;
+  headingLinkAnchorMode: Folder2GraphHeadingLinkAnchorMode;
+  hiddenNodes: Record<string, boolean>;
+  weightNodesBySubtree: boolean;
+  folderFilterMode: Folder2GraphFolderFilterMode;
+  folderFilterList: string[];
+  folderFilterHideFiles: boolean;
+};
+
+const DEFAULT_FOLDER2GRAPH_SETTINGS: Folder2GraphSettings = {
+  showFolderNodes: true,
+  hideRootNode: true,
+  nodeColor: "#5c8af5",
+  showHeadingNodes: false,
+  headingNodeColor: "#f5a55c",
+  headingLinkAnchorMode: "heading-heading",
+  hiddenNodes: {},
+  weightNodesBySubtree: false,
+  folderFilterMode: "exclude",
+  folderFilterList: [],
+  folderFilterHideFiles: false
+};
+
 type FolderAndGraphsPlusSettings = {
   combineSameNameFolders: boolean;
   showFolderEmoji: boolean;
   iWorkPackages: IWorkPackageSettings;
   graphFilters: GraphFilterSettings;
   folderColorRules: FolderColorRule[];
-  folder2graph?: Record<string, unknown>;
+  folder2graph: Folder2GraphSettings;
 };
 
 const DEFAULT_SETTINGS: FolderAndGraphsPlusSettings = {
@@ -72,7 +108,12 @@ const DEFAULT_SETTINGS: FolderAndGraphsPlusSettings = {
     attachmentExtensions: [...DEFAULT_GRAPH_FILTER_SETTINGS.attachmentExtensions],
     attachmentFolderRules: [...DEFAULT_GRAPH_FILTER_SETTINGS.attachmentFolderRules]
   },
-  folderColorRules: []
+  folderColorRules: [],
+  folder2graph: {
+    ...DEFAULT_FOLDER2GRAPH_SETTINGS,
+    hiddenNodes: { ...DEFAULT_FOLDER2GRAPH_SETTINGS.hiddenNodes },
+    folderFilterList: [...DEFAULT_FOLDER2GRAPH_SETTINGS.folderFilterList]
+  }
 };
 
 function createDefaultSettings(): FolderAndGraphsPlusSettings {
@@ -84,7 +125,12 @@ function createDefaultSettings(): FolderAndGraphsPlusSettings {
       attachmentExtensions: [...DEFAULT_SETTINGS.graphFilters.attachmentExtensions],
       attachmentFolderRules: [...DEFAULT_SETTINGS.graphFilters.attachmentFolderRules]
     },
-    folderColorRules: [...DEFAULT_SETTINGS.folderColorRules]
+    folderColorRules: [...DEFAULT_SETTINGS.folderColorRules],
+    folder2graph: {
+      ...DEFAULT_SETTINGS.folder2graph,
+      hiddenNodes: { ...DEFAULT_SETTINGS.folder2graph.hiddenNodes },
+      folderFilterList: [...DEFAULT_SETTINGS.folder2graph.folderFilterList]
+    }
   };
 }
 
@@ -238,8 +284,6 @@ type GraphData = {
   [key: string]: unknown;
 };
 
-type Folder2GraphSettings = Record<string, unknown>;
-
 type IWorkPackageFile = TFile & {
   __folderAndGraphsPlusIWorkPackageFile: true;
   __folderAndGraphsPlusPackageFolder: TFolder;
@@ -294,6 +338,13 @@ type FolderColorSuggestion = {
   target: string;
   label: string;
   detail: string;
+};
+
+type Folder2GraphRuntimePlugin = Plugin & {
+  settings?: Folder2GraphSettings;
+  loadData: () => Promise<unknown>;
+  saveData: (data: unknown) => Promise<void>;
+  refreshGraphLeaves?: () => void;
 };
 
 export default class FolderAndGraphsPlusPlugin extends Plugin {
@@ -1085,16 +1136,14 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       description: "Bundled copy of Folder2Graph used by Folder and Graphs Plus."
     });
 
-    const bridge = bundled as Plugin & {
-      loadData: () => Promise<unknown>;
-      saveData: (data: unknown) => Promise<void>;
-    };
+    const bridge = bundled as Folder2GraphRuntimePlugin;
 
     bridge.loadData = async () => this.settings.folder2graph ?? {};
     bridge.saveData = async (data: unknown) => {
       this.settings.folder2graph = this.parseFolder2GraphSettings(data);
       await this.saveSettings();
     };
+    bridge.addSettingTab = () => {};
 
     this.bundledFolder2Graph = bundled;
     await bundled.onload();
@@ -1112,7 +1161,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     }
   }
 
-  private isExternalFolder2GraphEnabled(): boolean {
+  isExternalFolder2GraphEnabled(): boolean {
     const appWithPlugins = this.app as typeof this.app & {
       plugins?: {
         enabledPlugins?: Set<string>;
@@ -1522,7 +1571,96 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   }
 
   private parseFolder2GraphSettings(value: unknown): Folder2GraphSettings {
-    return typeof value === "object" && value !== null ? { ...(value as Folder2GraphSettings) } : {};
+    if (typeof value !== "object" || value === null) {
+      return this.createDefaultFolder2GraphSettings();
+    }
+
+    const raw = value as Record<string, unknown>;
+    const defaults = this.createDefaultFolder2GraphSettings();
+    return {
+      showFolderNodes: typeof raw.showFolderNodes === "boolean" ? raw.showFolderNodes : defaults.showFolderNodes,
+      hideRootNode: true,
+      nodeColor: typeof raw.nodeColor === "string" && parseHexGraphColor(raw.nodeColor) ? raw.nodeColor : defaults.nodeColor,
+      showHeadingNodes: typeof raw.showHeadingNodes === "boolean" ? raw.showHeadingNodes : defaults.showHeadingNodes,
+      headingNodeColor: typeof raw.headingNodeColor === "string" && parseHexGraphColor(raw.headingNodeColor) ? raw.headingNodeColor : defaults.headingNodeColor,
+      headingLinkAnchorMode: this.normalizeFolder2GraphHeadingLinkAnchorMode(raw.headingLinkAnchorMode),
+      hiddenNodes: this.parseFolder2GraphHiddenNodes(raw.hiddenNodes),
+      weightNodesBySubtree: typeof raw.weightNodesBySubtree === "boolean" ? raw.weightNodesBySubtree : defaults.weightNodesBySubtree,
+      folderFilterMode: raw.folderFilterMode === "include" ? "include" : "exclude",
+      folderFilterList: this.parseFolder2GraphFolderFilterList(raw.folderFilterList),
+      folderFilterHideFiles: typeof raw.folderFilterHideFiles === "boolean" ? raw.folderFilterHideFiles : defaults.folderFilterHideFiles
+    };
+  }
+
+  private createDefaultFolder2GraphSettings(): Folder2GraphSettings {
+    return {
+      ...DEFAULT_FOLDER2GRAPH_SETTINGS,
+      hiddenNodes: { ...DEFAULT_FOLDER2GRAPH_SETTINGS.hiddenNodes },
+      folderFilterList: [...DEFAULT_FOLDER2GRAPH_SETTINGS.folderFilterList]
+    };
+  }
+
+  private normalizeFolder2GraphHeadingLinkAnchorMode(value: unknown): Folder2GraphHeadingLinkAnchorMode {
+    return (
+      value === "file-file" ||
+      value === "file-heading" ||
+      value === "heading-file" ||
+      value === "heading-heading"
+    )
+      ? value
+      : DEFAULT_FOLDER2GRAPH_SETTINGS.headingLinkAnchorMode;
+  }
+
+  private parseFolder2GraphHiddenNodes(value: unknown): Record<string, boolean> {
+    if (typeof value !== "object" || value === null) {
+      return {};
+    }
+
+    const hiddenNodes: Record<string, boolean> = {};
+    for (const [nodeId, hidden] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof nodeId === "string" && nodeId.length > 0 && hidden === true) {
+        hiddenNodes[nodeId] = true;
+      }
+    }
+
+    return hiddenNodes;
+  }
+
+  private parseFolder2GraphFolderFilterList(value: unknown): string[] {
+    const entries = Array.isArray(value)
+      ? value
+      : typeof value === "string"
+        ? value.split(/\n/)
+        : [];
+    const folders = new Set<string>();
+
+    for (const entry of entries) {
+      if (typeof entry !== "string") {
+        continue;
+      }
+
+      const normalized = entry.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (normalized.length > 0) {
+        folders.add(normalized);
+      }
+    }
+
+    return [...folders];
+  }
+
+  async saveFolder2GraphSettings(refreshGraphs = true): Promise<void> {
+    this.settings.folder2graph = this.parseFolder2GraphSettings(this.settings.folder2graph);
+    const runtime = this.bundledFolder2Graph as Folder2GraphRuntimePlugin | null;
+    if (runtime?.settings) {
+      Object.assign(runtime.settings, this.settings.folder2graph);
+      runtime.settings.hiddenNodes = { ...this.settings.folder2graph.hiddenNodes };
+      runtime.settings.folderFilterList = [...this.settings.folder2graph.folderFilterList];
+    }
+
+    await this.saveSettings();
+    if (refreshGraphs) {
+      this.refreshGraphsAfterSettingsChange();
+    }
   }
 
   refreshIWorkPackageFileSupport(refreshViews = true): void {
@@ -2099,8 +2237,12 @@ class FolderColorSuggest extends AbstractInputSuggest<FolderColorSuggestion> {
   }
 }
 
+type FolderAndGraphsPlusSettingsTabId = "plus" | "folder2graph";
+
 class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
   plugin: FolderAndGraphsPlusPlugin;
+  private activeTab: FolderAndGraphsPlusSettingsTabId = "plus";
+  private folder2GraphFilterListRefreshTimer: number | null = null;
 
   constructor(app: FolderAndGraphsPlusPlugin["app"], plugin: FolderAndGraphsPlusPlugin) {
     super(app, plugin);
@@ -2108,13 +2250,50 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
   }
 
   display(): void {
-    this.renderSettings();
+    this.renderSettingsShell();
   }
 
-  private renderSettings(): void {
+  hide(): void {
+    if (this.folder2GraphFilterListRefreshTimer !== null) {
+      window.clearTimeout(this.folder2GraphFilterListRefreshTimer);
+      this.folder2GraphFilterListRefreshTimer = null;
+    }
+  }
+
+  private renderSettingsShell(): void {
     const { containerEl } = this;
     containerEl.empty();
 
+    const tabContainer = containerEl.createDiv({ cls: "folderandgraphs-plus-settings-tabs" });
+    this.renderSettingsTabButton(tabContainer, "plus", "Folder and Graphs Plus");
+    this.renderSettingsTabButton(tabContainer, "folder2graph", "Folder2Graph");
+
+    const bodyEl = containerEl.createDiv({ cls: "folderandgraphs-plus-settings-tab-body" });
+    if (this.activeTab === "folder2graph") {
+      this.renderFolder2GraphSettings(bodyEl);
+    } else {
+      this.renderSettings(bodyEl);
+    }
+  }
+
+  private renderSettingsTabButton(
+    containerEl: HTMLElement,
+    tabId: FolderAndGraphsPlusSettingsTabId,
+    label: string
+  ): void {
+    const button = containerEl.createEl("button", {
+      text: label,
+      cls: "folderandgraphs-plus-settings-tab-button"
+    });
+    button.type = "button";
+    button.toggleClass("is-active", this.activeTab === tabId);
+    button.addEventListener("click", () => {
+      this.activeTab = tabId;
+      this.renderSettingsShell();
+    });
+  }
+
+  private renderSettings(containerEl: HTMLElement): void {
     new Setting(containerEl)
       .setName("Combine folders with the same name")
       .setDesc("Show folders that share the same basename as one combined graph node. When disabled, Folder2Graph keeps each full folder path separate.")
@@ -2125,7 +2304,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
             this.plugin.settings.combineSameNameFolders = value;
             await this.plugin.saveSettings();
             this.plugin.refreshGraphsAfterSettingsChange();
-            this.renderSettings();
+            this.renderSettingsShell();
           });
       });
 
@@ -2154,7 +2333,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
             this.plugin.settings.iWorkPackages.enabled = value;
             await this.plugin.saveSettings();
             this.plugin.refreshIWorkPackageFileSupport();
-            this.renderSettings();
+            this.renderSettingsShell();
           });
       });
 
@@ -2169,7 +2348,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.graphFilters.enabled = value;
             await this.saveAndRefresh();
-            this.renderSettings();
+            this.renderSettingsShell();
           });
       });
 
@@ -2230,7 +2409,147 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
               children: []
             });
             await this.saveAndRefresh();
-            this.renderSettings();
+            this.renderSettingsShell();
+          });
+      });
+  }
+
+  private renderFolder2GraphSettings(containerEl: HTMLElement): void {
+    const settings = this.plugin.settings.folder2graph ?? DEFAULT_FOLDER2GRAPH_SETTINGS;
+    const externalFolder2GraphEnabled = this.plugin.isExternalFolder2GraphEnabled();
+
+    if (externalFolder2GraphEnabled) {
+      new Setting(containerEl)
+        .setName("External Folder2Graph is enabled")
+        .setDesc("These controls apply to the bundled Folder2Graph runtime used by Folder and Graphs Plus. Disable the separate Folder2Graph plugin if you want these settings to control folder-node injection.");
+    }
+
+    new Setting(containerEl).setName("Folders").setHeading();
+
+    new Setting(containerEl)
+      .setName("Show folders")
+      .setDesc("Display the vault folder structure in Graph View.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(settings.showFolderNodes)
+          .onChange(async (value) => {
+            settings.showFolderNodes = value;
+            await this.saveFolder2GraphSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Folder node colour")
+      .setDesc("Colour used for Folder2Graph folder nodes before Folder and Graphs Plus colour rules override matching nodes.")
+      .addColorPicker((colorPicker) => {
+        colorPicker
+          .setValue(settings.nodeColor)
+          .onChange(async (value) => {
+            settings.nodeColor = value;
+            await this.saveFolder2GraphSettings();
+          });
+      });
+
+    new Setting(containerEl).setName("Headings").setHeading();
+
+    new Setting(containerEl)
+      .setName("Show heading nodes")
+      .setDesc("Display note headings as graph nodes.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(settings.showHeadingNodes)
+          .onChange(async (value) => {
+            settings.showHeadingNodes = value;
+            await this.saveFolder2GraphSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Heading node colour")
+      .setDesc("Colour used for Folder2Graph heading nodes.")
+      .addColorPicker((colorPicker) => {
+        colorPicker
+          .setValue(settings.headingNodeColor)
+          .onChange(async (value) => {
+            settings.headingNodeColor = value;
+            await this.saveFolder2GraphSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Heading link anchoring")
+      .setDesc("Choose which graph node is used for wikilinks that point to headings.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("file-file", "File -> file")
+          .addOption("file-heading", "File -> heading")
+          .addOption("heading-file", "Heading -> file")
+          .addOption("heading-heading", "Heading -> heading")
+          .setValue(settings.headingLinkAnchorMode)
+          .onChange(async (value) => {
+            settings.headingLinkAnchorMode = value as Folder2GraphHeadingLinkAnchorMode;
+            await this.saveFolder2GraphSettings();
+          });
+      });
+
+    new Setting(containerEl).setName("Folder filtering").setHeading();
+
+    new Setting(containerEl)
+      .setName("Folder filter mode")
+      .setDesc("Include only the listed folders, or exclude the listed folders.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("exclude", "Exclude")
+          .addOption("include", "Include")
+          .setValue(settings.folderFilterMode)
+          .onChange(async (value) => {
+            settings.folderFilterMode = value === "include" ? "include" : "exclude";
+            await this.saveFolder2GraphSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Folder filter list")
+      .setDesc("One vault-relative folder path per line.")
+      .addTextArea((textArea) => {
+        textArea
+          .setValue(settings.folderFilterList.join("\n"))
+          .onChange((value) => {
+            settings.folderFilterList = this.parseFolder2GraphFilterListInput(value);
+            void this.plugin.saveFolder2GraphSettings(false);
+            if (this.folder2GraphFilterListRefreshTimer !== null) {
+              window.clearTimeout(this.folder2GraphFilterListRefreshTimer);
+            }
+            this.folder2GraphFilterListRefreshTimer = window.setTimeout(() => {
+              this.folder2GraphFilterListRefreshTimer = null;
+              this.plugin.refreshGraphsAfterSettingsChange();
+            }, 600);
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Hide filtered-out files")
+      .setDesc("Hide files and headings inside folders excluded by the folder filter.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(settings.folderFilterHideFiles)
+          .onChange(async (value) => {
+            settings.folderFilterHideFiles = value;
+            await this.saveFolder2GraphSettings();
+          });
+      });
+
+    new Setting(containerEl).setName("Weighting").setHeading();
+
+    new Setting(containerEl)
+      .setName("Weight nodes by descendants")
+      .setDesc("Increase node size based on visible descendants.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(settings.weightNodesBySubtree)
+          .onChange(async (value) => {
+            settings.weightNodesBySubtree = value;
+            await this.saveFolder2GraphSettings();
           });
       });
   }
@@ -2269,7 +2588,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
         rule.type = suggestion.type;
         rule.target = suggestion.target;
         await this.saveAndRefresh();
-        this.renderSettings();
+        this.renderSettingsShell();
       });
     });
 
@@ -2338,7 +2657,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
             children: []
           });
           await this.saveAndRefresh();
-          this.renderSettings();
+          this.renderSettingsShell();
         });
     });
 
@@ -2350,7 +2669,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
         .onClick(async () => {
           siblings.splice(index, 1);
           await this.saveAndRefresh();
-          this.renderSettings();
+          this.renderSettingsShell();
         });
     });
 
@@ -2384,6 +2703,22 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
   private async saveAndRefresh(): Promise<void> {
     await this.plugin.saveSettings();
     this.plugin.refreshGraphsAfterSettingsChange();
+  }
+
+  private async saveFolder2GraphSettings(): Promise<void> {
+    await this.plugin.saveFolder2GraphSettings();
+  }
+
+  private parseFolder2GraphFilterListInput(value: string): string[] {
+    const folders = new Set<string>();
+    for (const entry of value.split("\n")) {
+      const normalized = entry.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (normalized.length > 0) {
+        folders.add(normalized);
+      }
+    }
+
+    return [...folders];
   }
 
   private addToggleTag(setting: Setting, text: string): void {

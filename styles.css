@@ -1,3 +1,38 @@
+.folderandgraphs-plus-settings-tabs {
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 18px;
+  padding-bottom: 8px;
+}
+
+.folderandgraphs-plus-settings-tab-button {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  min-height: 32px;
+  padding: 6px 10px;
+}
+
+.folderandgraphs-plus-settings-tab-button:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.folderandgraphs-plus-settings-tab-button.is-active {
+  background: var(--background-modifier-active-hover);
+  color: var(--text-normal);
+}
+
+.folderandgraphs-plus-settings-tab-body {
+  min-width: 0;
+}
+
 .folderandgraphs-plus-rule-row {
   width: 100%;
 }

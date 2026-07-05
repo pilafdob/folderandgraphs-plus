@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.4.0
+
+- Move bundled Folder2Graph controls into a second Folder and Graphs Plus settings tab instead of registering a separate bundled plugin settings tab.
+- Always hide the Folder2Graph root folder node and remove the root-node visibility toggle from settings.
+
 ## 4.2.0
 
 - Preserve custom file icons from icon plugins on iWork package rows and only replace folder/folder-open icons.
