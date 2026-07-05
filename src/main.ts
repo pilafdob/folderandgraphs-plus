@@ -7,6 +7,7 @@ import {
   TFolder,
   prepareFuzzySearch,
   getLinkpath,
+  setIcon,
   type TAbstractFile,
   type FileStats,
   type WorkspaceLeaf
@@ -32,6 +33,7 @@ import {
   DEFAULT_GRAPH_FILTER_SETTINGS,
   applyGraphFilters,
   normalizeGraphFilterSettings,
+  removeRootFolderNode,
   type GraphFilterSettings
 } from "./graphFilters";
 import {
@@ -249,6 +251,7 @@ type FileExplorerLike = {
   requestSort?: () => void;
   update?: () => void;
   containerEl?: HTMLElement;
+  fileItems?: Record<string, FileExplorerItemLike>;
 };
 
 type PatchableVault = {
@@ -258,6 +261,32 @@ type PatchableVault = {
 type PatchableMetadataCache = {
   getFirstLinkpathDest: (linkpath: string, sourcePath: string) => TFile | null;
   fileToLinktext: (file: TFile, sourcePath: string, omitMdExtension?: boolean) => string;
+};
+
+type FileExplorerClickEvent = MouseEvent | KeyboardEvent;
+
+type FileExplorerItemLike = {
+  file?: TAbstractFile;
+  el?: HTMLElement;
+  view?: {
+    tree?: {
+      handleItemSelection?: (event: FileExplorerClickEvent, item: FileExplorerItemLike) => boolean;
+    };
+    app?: {
+      workspace?: {
+        getLeaf?: (newLeaf?: boolean) => WorkspaceLeaf;
+        getMostRecentLeaf?: () => WorkspaceLeaf | null;
+        setActiveLeaf?: (leaf: WorkspaceLeaf | null, params?: { focus?: boolean }) => void;
+      };
+    };
+  };
+  selfEl?: HTMLElement;
+  collapseEl?: HTMLElement;
+  childrenEl?: HTMLElement;
+  tagEl?: HTMLElement;
+  setCollapsed?: (collapsed: boolean) => void;
+  onSelfClick?: (event: FileExplorerClickEvent) => void;
+  __folderAndGraphsPlusOriginalOnSelfClick?: (event: FileExplorerClickEvent) => void;
 };
 
 type FolderColorSuggestion = {
@@ -293,6 +322,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private patchedGetFirstLinkpathDest: PatchableMetadataCache["getFirstLinkpathDest"] | null = null;
   private originalFileToLinktext: PatchableMetadataCache["fileToLinktext"] | null = null;
   private patchedFileToLinktext: PatchableMetadataCache["fileToLinktext"] | null = null;
+  private patchedIWorkFileExplorerItems = new Set<FileExplorerItemLike>();
+  private iWorkFileExplorerDecorationTimeouts: number[] = [];
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -304,12 +335,14 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         this.refreshGraphLeaves();
+        this.queueIWorkPackageFileExplorerDecoration();
       })
     );
 
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         this.refreshGraphLeaves();
+        this.queueIWorkPackageFileExplorerDecoration();
       })
     );
 
@@ -328,6 +361,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     );
 
     this.refreshGraphLeaves();
+    this.queueIWorkPackageFileExplorerDecoration();
     if (this.settings.combineSameNameFolders || this.settings.graphFilters.enabled) {
       this.refreshGraphsAfterSettingsChange();
     }
@@ -346,6 +380,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     this.restoreAllGraphLabelStyles();
     this.restoreGraphNodeRenderMethods();
     this.restoreGraphLinkRenderMethods();
+    this.clearIWorkFileExplorerDecorationTimeout();
     this.restoreIWorkPackageFileSupport(false);
     this.patchedPrototype = null;
     this.originalGetFillColor = null;
@@ -1094,8 +1129,12 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private ensureGraphDataPatch(leaf: GraphLeaf, controller: GraphLeafController): void {
     const renderer = leaf.view?.renderer;
     controller.dataPatch = installGraphDataPatch(controller.dataPatch, renderer, (data) => {
+      const graphOptions = this.getGraphOptions(leaf);
       const iWorkData = this.settings.iWorkPackages.enabled
-        ? normalizeIWorkPackageGraphData(data, (nodeId, node) => this.isFolderNode(nodeId, node)) as GraphData
+        ? this.addIWorkPackageFilesToGraphData(
+            normalizeIWorkPackageGraphData(data, (nodeId, node) => this.isFolderNode(nodeId, node)) as GraphData,
+            graphOptions.showOrphans
+          )
         : data;
       const nextData = this.settings.combineSameNameFolders
         ? this.mergeSameNameFolderNodes(iWorkData)
@@ -1105,10 +1144,98 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         this.settings.graphFilters,
         (nodeId, node) => this.isFolderNode(nodeId, node)
       ) as GraphData;
+      const rootlessData = removeRootFolderNode(
+        filteredData,
+        (nodeId, node) => this.isFolderNode(nodeId, node)
+      ) as GraphData;
 
-      this.rememberNodePluginColors(filteredData);
-      return filteredData;
+      this.rememberNodePluginColors(rootlessData);
+      return rootlessData;
     });
+  }
+
+  private getGraphOptions(leaf: GraphLeaf): { showOrphans: boolean } {
+    const rawOptions = leaf.view?.dataEngine?.getOptions?.();
+    if (typeof rawOptions !== "object" || rawOptions === null) {
+      return { showOrphans: true };
+    }
+
+    const options = rawOptions as Record<string, unknown>;
+    return {
+      showOrphans: options.showOrphans !== false
+    };
+  }
+
+  private addIWorkPackageFilesToGraphData(data: GraphData, showOrphans: boolean): GraphData {
+    if (!data.nodes || this.iWorkPackageFilesByPath.size === 0) {
+      return data;
+    }
+
+    const nodes: Record<string, GraphNodeData> = {};
+    for (const [nodeId, node] of Object.entries(data.nodes)) {
+      nodes[nodeId] = {
+        ...node,
+        links: { ...(node.links ?? {}) }
+      };
+    }
+
+    let changed = false;
+    for (const packageFile of this.iWorkPackageFilesByPath.values()) {
+      if (nodes[packageFile.path]) {
+        continue;
+      }
+
+      const sourceNodeIds = this.getIWorkPackageGraphSourceNodeIds(packageFile.path, nodes);
+      if (!showOrphans && sourceNodeIds.length === 0) {
+        continue;
+      }
+
+      nodes[packageFile.path] = {
+        links: Object.fromEntries(sourceNodeIds.map((sourceNodeId) => [sourceNodeId, true]))
+      };
+
+      for (const sourceNodeId of sourceNodeIds) {
+        nodes[sourceNodeId].links = {
+          ...(nodes[sourceNodeId].links ?? {}),
+          [packageFile.path]: true
+        };
+      }
+
+      changed = true;
+    }
+
+    return changed ? { ...data, nodes } : data;
+  }
+
+  private getIWorkPackageGraphSourceNodeIds(
+    packagePath: string,
+    nodes: Record<string, GraphNodeData>
+  ): string[] {
+    const sourceNodeIds = new Set<string>();
+    for (const [sourcePath, targets] of Object.entries(this.app.metadataCache.resolvedLinks)) {
+      if (!targets || typeof targets !== "object" || !Object.prototype.hasOwnProperty.call(targets, packagePath)) {
+        continue;
+      }
+
+      const sourceNodeId = this.resolveGraphFileNodeId(sourcePath, nodes);
+      if (sourceNodeId) {
+        sourceNodeIds.add(sourceNodeId);
+      }
+    }
+
+    return [...sourceNodeIds];
+  }
+
+  private resolveGraphFileNodeId(
+    filePath: string,
+    nodes: Record<string, GraphNodeData>
+  ): string | null {
+    if (nodes[filePath]) {
+      return filePath;
+    }
+
+    const extensionlessPath = filePath.endsWith(".md") ? filePath.slice(0, -3) : filePath;
+    return nodes[extensionlessPath] ? extensionlessPath : null;
   }
 
   private unpatchGraphLeafControllers(): void {
@@ -1422,6 +1549,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     this.iWorkPackageFilesByBasename.clear();
     this.restoreIWorkPackageMetadataPatch();
     this.restoreIWorkPackageVaultPatch();
+    this.restoreIWorkPackageFileExplorerItems();
     if (refreshViews) {
       this.refreshFileExplorerLeaves();
       this.refreshGraphsAfterSettingsChange();
@@ -1659,6 +1787,181 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       view?.requestSort?.();
       view?.update?.();
     }
+
+    this.queueIWorkPackageFileExplorerDecoration();
+  }
+
+  private queueIWorkPackageFileExplorerDecoration(): void {
+    this.clearIWorkFileExplorerDecorationTimeout();
+    this.decorateIWorkPackageFileExplorerLeaves();
+    for (const delay of [100, 500, 1500, 3000, 6000]) {
+      const timeout = window.setTimeout(() => {
+        this.iWorkFileExplorerDecorationTimeouts = this.iWorkFileExplorerDecorationTimeouts.filter(
+          (queuedTimeout) => queuedTimeout !== timeout
+        );
+        this.decorateIWorkPackageFileExplorerLeaves();
+      }, delay);
+      this.iWorkFileExplorerDecorationTimeouts.push(timeout);
+    }
+  }
+
+  private clearIWorkFileExplorerDecorationTimeout(): void {
+    for (const timeout of this.iWorkFileExplorerDecorationTimeouts) {
+      window.clearTimeout(timeout);
+    }
+
+    this.iWorkFileExplorerDecorationTimeouts = [];
+  }
+
+  private decorateIWorkPackageFileExplorerLeaves(): void {
+    if (!this.settings.iWorkPackages.enabled) {
+      return;
+    }
+
+    for (const leaf of this.app.workspace.getLeavesOfType("file-explorer")) {
+      const view = leaf.view as FileExplorerLike | undefined;
+      const items = view?.fileItems;
+      if (!items) {
+        continue;
+      }
+
+      for (const item of Object.values(items)) {
+        const file = item.file;
+        if (!(file instanceof TFolder) || file.isRoot() || !isIWorkPackagePath(file.path)) {
+          continue;
+        }
+
+        this.decorateIWorkPackageFileExplorerItem(item, file);
+      }
+
+      this.decorateVisibleIWorkFileExplorerTags(leaf);
+    }
+  }
+
+  private decorateVisibleIWorkFileExplorerTags(leaf: WorkspaceLeaf): void {
+    const containerEl = leaf.view?.containerEl;
+    if (!containerEl) {
+      return;
+    }
+
+    for (const rowEl of Array.from(containerEl.querySelectorAll<HTMLElement>("[data-path]"))) {
+      const path = rowEl.getAttribute("data-path");
+      if (!path || !isIWorkPackagePath(path)) {
+        continue;
+      }
+
+      this.decorateIWorkFileExplorerTag(rowEl, path);
+      this.decorateIWorkFileExplorerIcon(rowEl);
+    }
+  }
+
+  private decorateIWorkPackageFileExplorerItem(item: FileExplorerItemLike, folder: TFolder): void {
+    item.setCollapsed?.(true);
+    item.el?.removeClasses(["nav-folder", "is-collapsed"]);
+    item.el?.addClasses(["nav-file", "folderandgraphs-plus-iwork-package-item"]);
+    item.selfEl?.addClasses(["nav-file-title", "tappable", "is-unsupported", "folderandgraphs-plus-iwork-package"]);
+    item.selfEl?.removeClasses(["nav-folder-title", "mod-collapsible"]);
+    const folderTitleContentEl = item.selfEl?.querySelector(".nav-folder-title-content");
+    folderTitleContentEl?.removeClass("nav-folder-title-content");
+    folderTitleContentEl?.addClass("nav-file-title-content");
+    this.decorateIWorkFileExplorerIcon(item.selfEl);
+    this.decorateIWorkFileExplorerTag(item.selfEl, folder.path);
+    item.collapseEl?.addClass("folderandgraphs-plus-iwork-package-collapse");
+    item.childrenEl?.addClass("folderandgraphs-plus-iwork-package-children");
+
+    if (item.__folderAndGraphsPlusOriginalOnSelfClick) {
+      return;
+    }
+
+    item.__folderAndGraphsPlusOriginalOnSelfClick = item.onSelfClick;
+    const getPackageFile = (): IWorkPackageFile | null => this.iWorkPackageFilesByPath.get(folder.path) ?? null;
+    item.onSelfClick = function folderAndGraphsPlusIWorkPackageClick(event: FileExplorerClickEvent): void {
+      if (event instanceof MouseEvent && event.button !== 0 && event.button !== 1) {
+        return;
+      }
+
+      const packageFile = getPackageFile();
+      if (!packageFile) {
+        return;
+      }
+
+      if (item.view?.tree?.handleItemSelection?.(event, item)) {
+        return;
+      }
+
+      const workspace = item.view?.app?.workspace;
+      const leaf = workspace?.getLeaf?.(event instanceof MouseEvent && (event.metaKey || event.ctrlKey));
+      void leaf?.openFile(packageFile);
+      workspace?.setActiveLeaf?.(workspace.getMostRecentLeaf?.() ?? leaf ?? null, { focus: true });
+    };
+    this.patchedIWorkFileExplorerItems.add(item);
+  }
+
+  private decorateIWorkFileExplorerIcon(selfEl: HTMLElement | undefined): void {
+    const sidekickIconEl = selfEl?.querySelector<HTMLElement>(".iconic-sidekick.iconic-icon");
+    if (!sidekickIconEl) {
+      return;
+    }
+
+    const currentIconEl = sidekickIconEl.querySelector<SVGElement>("svg");
+    if (currentIconEl?.classList.contains("lucide-file")) {
+      return;
+    }
+
+    setIcon(sidekickIconEl, "file");
+  }
+
+  private decorateIWorkFileExplorerTag(selfEl: HTMLElement | undefined, path: string): void {
+    if (!selfEl) {
+      return;
+    }
+
+    const tagText = this.getIWorkPackageExplorerTagText(path);
+    let tagEl =
+      selfEl.querySelector<HTMLElement>(".folderandgraphs-plus-iwork-package-tag") ??
+      selfEl.querySelector<HTMLElement>(".nav-file-tag");
+
+    if (!tagEl) {
+      tagEl = document.createElement("div");
+      selfEl.appendChild(tagEl);
+    }
+
+    tagEl.addClasses(["nav-file-tag", "folderandgraphs-plus-iwork-package-tag"]);
+    if (tagEl.textContent !== tagText) {
+      tagEl.textContent = tagText;
+    }
+  }
+
+  private getIWorkPackageExplorerTagText(path: string): string {
+    switch (getPathExtension(path)) {
+      case "key":
+        return "KEYNOTE";
+      case "numbers":
+        return "NUMBERS";
+      case "pages":
+        return "PAGES";
+      default:
+        return getPathExtension(path).toUpperCase();
+    }
+  }
+
+  private restoreIWorkPackageFileExplorerItems(): void {
+    for (const item of this.patchedIWorkFileExplorerItems) {
+      if (item.__folderAndGraphsPlusOriginalOnSelfClick) {
+        item.onSelfClick = item.__folderAndGraphsPlusOriginalOnSelfClick;
+        delete item.__folderAndGraphsPlusOriginalOnSelfClick;
+      }
+
+      item.selfEl?.removeClasses(["nav-file-title", "tappable", "is-unsupported", "folderandgraphs-plus-iwork-package"]);
+      item.selfEl?.addClasses(["nav-folder-title", "mod-collapsible"]);
+      item.el?.removeClasses(["nav-file", "folderandgraphs-plus-iwork-package-item"]);
+      item.el?.addClass("nav-folder");
+      item.collapseEl?.removeClass("folderandgraphs-plus-iwork-package-collapse");
+      item.childrenEl?.removeClass("folderandgraphs-plus-iwork-package-children");
+      item.selfEl?.querySelector<HTMLElement>(".folderandgraphs-plus-iwork-package-tag")?.remove();
+    }
+
+    this.patchedIWorkFileExplorerItems.clear();
   }
 
   refreshGraphsAfterSettingsChange(): void {
@@ -1840,7 +2143,7 @@ class FolderAndGraphsPlusSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Recognise iWork packages as files")
-      .setDesc("Treat .pages, .key, and .numbers packages as file attachments instead of folders in File Explorer and Graph View.")
+      .setDesc("Treat .pages, .key, and .numbers packages as file attachments instead of folders in File Explorer and Graph View. In Obsidian's Files and Links settings, turn on Detect all file extensions for .pages, .key, and .numbers files to appear.")
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.iWorkPackages.enabled)

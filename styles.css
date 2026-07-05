@@ -63,6 +63,11 @@
   width: 1px;
 }
 
+.folderandgraphs-plus-iwork-package-collapse,
+.folderandgraphs-plus-iwork-package-children {
+  display: none !important;
+}
+
 @media (max-width: 900px) {
   .folderandgraphs-plus-rule-setting {
     display: block;

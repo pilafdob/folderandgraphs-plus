@@ -7,6 +7,7 @@ import {
   normalizeAttachmentExtensions,
   normalizeAttachmentFolderRules,
   normalizeGraphFilterSettings,
+  removeRootFolderNode,
   shouldShowAttachmentFolder,
   shouldShowGraphNode
 } from "../testable/graphFilters.mjs";
@@ -22,6 +23,22 @@ test("disabled graph filters leave data untouched", () => {
   };
 
   assert.equal(applyGraphFilters(data, DEFAULT_GRAPH_FILTER_SETTINGS, isFolderNode), data);
+});
+
+test("root folder node is removed and links to it are cleaned independently of graph filters", () => {
+  const data = {
+    nodes: {
+      "/": { type: "f2g_node", links: { "/Biology": true, "Notes/A.md": true } },
+      "/Biology": { type: "f2g_node", links: { "/": true, "Notes/A.md": true } },
+      "Notes/A.md": { links: { "/": true, "/Biology": true } }
+    }
+  };
+
+  const filtered = removeRootFolderNode(data, isFolderNode);
+
+  assert.deepEqual(Object.keys(filtered.nodes).sort(), ["/Biology", "Notes/A.md"]);
+  assert.deepEqual(filtered.nodes["/Biology"].links, { "Notes/A.md": true });
+  assert.deepEqual(filtered.nodes["Notes/A.md"].links, { "/Biology": true });
 });
 
 test("show-only attachment extensions keep only matching attachments and clean links", () => {

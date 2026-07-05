@@ -163,6 +163,34 @@ export function applyGraphFilters(
   return { ...data, nodes };
 }
 
+export function removeRootFolderNode(
+  data: GraphFilterData,
+  isFolderNode: (nodeId: string, node: GraphFilterNode | undefined) => boolean
+): GraphFilterData {
+  const rootNode = data.nodes?.["/"];
+  if (!data.nodes || !isFolderNode("/", rootNode)) {
+    return data;
+  }
+
+  const keptNodeIds = new Set(Object.keys(data.nodes));
+  keptNodeIds.delete("/");
+
+  const nodes: Record<string, GraphFilterNode> = {};
+  for (const nodeId of keptNodeIds) {
+    const node = data.nodes[nodeId];
+    if (!node) {
+      continue;
+    }
+
+    nodes[nodeId] = {
+      ...node,
+      links: filterNodeLinks(node.links, keptNodeIds)
+    };
+  }
+
+  return { ...data, nodes };
+}
+
 export function shouldShowGraphNode(
   nodeId: string,
   node: GraphFilterNode | undefined,

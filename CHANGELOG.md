@@ -5,6 +5,12 @@
 - Fix iWork package documents disappearing after enabling file type support.
 - Stop patching the vault adapter and mutating loaded package folders into `TFile` objects.
 - Expose `.pages`, `.key`, and `.numbers` packages through Obsidian's file/link APIs with synthetic file records while keeping the real vault folder tree intact.
+- Render downloaded iWork package directories as file-like File Explorer rows and hide their internal package children.
+- Show file type badges for iWork package rows, including `KEYNOTE` for `.key` packages and `NUMBERS` for `.numbers` packages.
+- Keep iWork package rows on file icons after icon plugins repaint package folder rows.
+- Note in settings that Obsidian's Detect all file extensions option must be enabled for iWork packages to appear.
+- Inject synthetic iWork package file nodes into Graph View data so they appear alongside other configured attachment extensions.
+- Respect Graph View's native Orphans filter when adding synthetic iWork package file nodes.
 
 ## 4.0.0
 

@@ -100,6 +100,26 @@ function applyGraphFilters(data, settings, isFolderNode) {
   }
   return { ...data, nodes };
 }
+function removeRootFolderNode(data, isFolderNode) {
+  const rootNode = data.nodes?.["/"];
+  if (!data.nodes || !isFolderNode("/", rootNode)) {
+    return data;
+  }
+  const keptNodeIds = new Set(Object.keys(data.nodes));
+  keptNodeIds.delete("/");
+  const nodes = {};
+  for (const nodeId of keptNodeIds) {
+    const node = data.nodes[nodeId];
+    if (!node) {
+      continue;
+    }
+    nodes[nodeId] = {
+      ...node,
+      links: filterNodeLinks(node.links, keptNodeIds)
+    };
+  }
+  return { ...data, nodes };
+}
 function shouldShowGraphNode(nodeId, node, settings, isFolderNode) {
   const folderNode = isFolderNode(nodeId, node);
   const extension = folderNode ? getFirstPathSegmentExtension(nodeId) : getNodeExtension(nodeId);
@@ -276,6 +296,7 @@ export {
   normalizeAttachmentExtensions,
   normalizeAttachmentFolderRules,
   normalizeGraphFilterSettings,
+  removeRootFolderNode,
   shouldShowAttachmentExtension,
   shouldShowAttachmentFolder,
   shouldShowGraphNode
