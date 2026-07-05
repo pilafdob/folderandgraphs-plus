@@ -1904,7 +1904,10 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     }
 
     const currentIconEl = sidekickIconEl.querySelector<SVGElement>("svg");
-    if (currentIconEl?.classList.contains("lucide-file")) {
+    if (
+      !currentIconEl?.classList.contains("lucide-folder") &&
+      !currentIconEl?.classList.contains("lucide-folder-open")
+    ) {
       return;
     }
 

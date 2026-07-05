@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.2.0
+
+- Preserve custom file icons from icon plugins on iWork package rows and only replace folder/folder-open icons.
+- Keep the iWork package File Explorer, Graph View, and file/link recognition fixes from 4.0.1.
+
 ## 4.0.1
 
 - Fix iWork package documents disappearing after enabling file type support.
