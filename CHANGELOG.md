@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.4.1
+
+- Fix the bundled Folder2Graph runtime bridge typing so Obsidian community review does not flag custom runtime settings access as use of a newer Obsidian API.
+- Replace a File Explorer tag creation fallback with the row's owner document for better popout-window compatibility.
+- Clean up scanner-reported TypeScript recommendations without changing iWork package graph behavior.
+
 ## 4.4.0
 
 - Move bundled Folder2Graph controls into a second Folder and Graphs Plus settings tab instead of registering a separate bundled plugin settings tab.

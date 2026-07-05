@@ -115,7 +115,9 @@ function folderNodeIdToFilePath(nodeId: string): string {
 }
 
 function graphFolderNodeToFileNode(node: IWorkGraphNode): IWorkGraphNode {
-  const { type: _type, folderNode: _folderNode, ...fileNode } = node;
+  const fileNode = { ...node };
+  delete fileNode.type;
+  delete fileNode.folderNode;
   return fileNode;
 }
 

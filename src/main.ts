@@ -340,16 +340,32 @@ type FolderColorSuggestion = {
   detail: string;
 };
 
-type Folder2GraphRuntimePlugin = Plugin & {
+type Folder2GraphRuntimePlugin = {
   settings?: Folder2GraphSettings;
+  __interactions?: Folder2GraphInteractionController;
   loadData: () => Promise<unknown>;
   saveData: (data: unknown) => Promise<void>;
+  addSettingTab: (...args: unknown[]) => void;
+  onload: () => void | Promise<void>;
+  onunload: () => void;
   refreshGraphLeaves?: () => void;
+};
+
+type Folder2GraphInteractionController = {
+  originalOpenLinkText?: ((linktext: string, sourcePath: string, ...args: unknown[]) => unknown) | null;
+  modHeld?: boolean;
+  getFolderNodeIds?: () => Set<string>;
+  getGhostFolderIds?: () => Set<string>;
+  getGhostHeadingIds?: () => Set<string>;
+  applyFolderPathFilter?: (nodeId: string) => void;
+  revealFolderInExplorer?: (nodeId: string) => void;
+  createGhostFolder?: (nodeId: string) => unknown;
+  createGhostHeading?: (nodeId: string) => unknown;
 };
 
 export default class FolderAndGraphsPlusPlugin extends Plugin {
   settings: FolderAndGraphsPlusSettings = createDefaultSettings();
-  private bundledFolder2Graph: Plugin | null = null;
+  private bundledFolder2Graph: Folder2GraphRuntimePlugin | null = null;
   private patchedPrototype: PatchableGraphNode | null = null;
   private originalGetFillColor: (() => GraphColor) | null = null;
   private patchedGetFillColor: (() => GraphColor) | null = null;
@@ -1145,8 +1161,48 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     };
     bridge.addSettingTab = () => {};
 
-    this.bundledFolder2Graph = bundled;
+    this.bundledFolder2Graph = bridge;
     await bundled.onload();
+    this.disableBundledFolder2GraphClickHiding(bridge);
+  }
+
+  private disableBundledFolder2GraphClickHiding(runtime: Folder2GraphRuntimePlugin): void {
+    const interactions = runtime.__interactions;
+    const originalOpenLinkText = interactions?.originalOpenLinkText;
+    if (!interactions || typeof originalOpenLinkText !== "function") {
+      return;
+    }
+
+    const workspace = this.app.workspace as typeof this.app.workspace & {
+      openLinkText: (linktext: string, sourcePath: string, ...args: unknown[]) => Promise<void>;
+    };
+
+    workspace.openLinkText = async (linktext: string, sourcePath: string, ...args: unknown[]): Promise<void> => {
+      const isGraphClick = this.app.workspace.getMostRecentLeaf()?.view?.getViewType?.() === "graph";
+      const folderNodeIds = interactions.getFolderNodeIds?.();
+
+      if (isGraphClick && interactions.modHeld === true && folderNodeIds?.has(linktext)) {
+        interactions.applyFolderPathFilter?.(linktext);
+        return;
+      }
+
+      if (interactions.getGhostFolderIds?.()?.has(linktext)) {
+        await interactions.createGhostFolder?.(linktext);
+        return;
+      }
+
+      if (interactions.getGhostHeadingIds?.()?.has(linktext)) {
+        await interactions.createGhostHeading?.(linktext);
+        return;
+      }
+
+      if (folderNodeIds?.has(linktext)) {
+        interactions.revealFolderInExplorer?.(linktext);
+        return;
+      }
+
+      await originalOpenLinkText(linktext, sourcePath, ...args);
+    };
   }
 
   private async unloadBundledFolder2Graph(): Promise<void> {
@@ -1181,7 +1237,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       const graphOptions = this.getGraphOptions(leaf);
       const iWorkData = this.settings.iWorkPackages.enabled
         ? this.addIWorkPackageFilesToGraphData(
-            normalizeIWorkPackageGraphData(data, (nodeId, node) => this.isFolderNode(nodeId, node)) as GraphData,
+            normalizeIWorkPackageGraphData(data, (nodeId, node) => this.isFolderNode(nodeId, node)),
             graphOptions.showOrphans
           )
         : data;
@@ -1192,11 +1248,11 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         nextData,
         this.settings.graphFilters,
         (nodeId, node) => this.isFolderNode(nodeId, node)
-      ) as GraphData;
+      );
       const rootlessData = removeRootFolderNode(
         filteredData,
         (nodeId, node) => this.isFolderNode(nodeId, node)
-      ) as GraphData;
+      );
 
       this.rememberNodePluginColors(rootlessData);
       return rootlessData;
@@ -1584,7 +1640,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       showHeadingNodes: typeof raw.showHeadingNodes === "boolean" ? raw.showHeadingNodes : defaults.showHeadingNodes,
       headingNodeColor: typeof raw.headingNodeColor === "string" && parseHexGraphColor(raw.headingNodeColor) ? raw.headingNodeColor : defaults.headingNodeColor,
       headingLinkAnchorMode: this.normalizeFolder2GraphHeadingLinkAnchorMode(raw.headingLinkAnchorMode),
-      hiddenNodes: this.parseFolder2GraphHiddenNodes(raw.hiddenNodes),
+      hiddenNodes: {},
       weightNodesBySubtree: typeof raw.weightNodesBySubtree === "boolean" ? raw.weightNodesBySubtree : defaults.weightNodesBySubtree,
       folderFilterMode: raw.folderFilterMode === "include" ? "include" : "exclude",
       folderFilterList: this.parseFolder2GraphFolderFilterList(raw.folderFilterList),
@@ -1611,21 +1667,6 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       : DEFAULT_FOLDER2GRAPH_SETTINGS.headingLinkAnchorMode;
   }
 
-  private parseFolder2GraphHiddenNodes(value: unknown): Record<string, boolean> {
-    if (typeof value !== "object" || value === null) {
-      return {};
-    }
-
-    const hiddenNodes: Record<string, boolean> = {};
-    for (const [nodeId, hidden] of Object.entries(value as Record<string, unknown>)) {
-      if (typeof nodeId === "string" && nodeId.length > 0 && hidden === true) {
-        hiddenNodes[nodeId] = true;
-      }
-    }
-
-    return hiddenNodes;
-  }
-
   private parseFolder2GraphFolderFilterList(value: unknown): string[] {
     const entries = Array.isArray(value)
       ? value
@@ -1650,7 +1691,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
 
   async saveFolder2GraphSettings(refreshGraphs = true): Promise<void> {
     this.settings.folder2graph = this.parseFolder2GraphSettings(this.settings.folder2graph);
-    const runtime = this.bundledFolder2Graph as Folder2GraphRuntimePlugin | null;
+    const runtime = this.bundledFolder2Graph;
     if (runtime?.settings) {
       Object.assign(runtime.settings, this.settings.folder2graph);
       runtime.settings.hiddenNodes = { ...this.settings.folder2graph.hiddenNodes };
@@ -2063,7 +2104,7 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
       selfEl.querySelector<HTMLElement>(".nav-file-tag");
 
     if (!tagEl) {
-      tagEl = document.createElement("div");
+      tagEl = selfEl.ownerDocument.createElement("div");
       selfEl.appendChild(tagEl);
     }
 
