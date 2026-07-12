@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.4.2
+
+- Remove the CSS `!important` declaration reported by Obsidian review and use narrow File Explorer selectors for iWork package internals instead.
+- Add regression tests that keep plugin styles free of `!important` declarations and preserve the specific iWork package selectors.
+
 ## 4.4.1
 
 - Fix the bundled Folder2Graph runtime bridge typing so Obsidian community review does not flag custom runtime settings access as use of a newer Obsidian API.

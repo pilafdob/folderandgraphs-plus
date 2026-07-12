@@ -98,9 +98,9 @@
   width: 1px;
 }
 
-.folderandgraphs-plus-iwork-package-collapse,
-.folderandgraphs-plus-iwork-package-children {
-  display: none !important;
+.nav-folder-collapse-indicator.folderandgraphs-plus-iwork-package-collapse,
+.nav-folder-children.folderandgraphs-plus-iwork-package-children {
+  display: none;
 }
 
 @media (max-width: 900px) {
