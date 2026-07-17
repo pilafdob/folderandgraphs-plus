@@ -35,6 +35,4 @@ Credits/used files: https://community.obsidian.md/plugins/folders2graph
 
 ## Credits
 
-Developed by the bltrsh© team, @pilafdob.
-
-Visit us at https://bubbletrash.com.
+Developed by Filip, @pilafdob.
