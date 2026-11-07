@@ -99,6 +99,9 @@
 }
 
 .nav-folder-collapse-indicator.folderandgraphs-plus-iwork-package-collapse,
+.nav-folder-title.folderandgraphs-plus-iwork-package > .nav-folder-collapse-indicator,
+.nav-folder-title.folderandgraphs-plus-iwork-package > .tree-item-icon,
+.nav-folder-title.folderandgraphs-plus-iwork-package > .collapse-icon,
 .nav-folder-children.folderandgraphs-plus-iwork-package-children {
   display: none;
 }

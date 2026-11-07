@@ -298,10 +298,6 @@ type FileExplorerLike = {
   fileItems?: Record<string, FileExplorerItemLike>;
 };
 
-type PatchableVault = {
-  getFiles: () => TFile[];
-};
-
 type PatchableMetadataCache = {
   getFirstLinkpathDest: (linkpath: string, sourcePath: string) => TFile | null;
   fileToLinktext: (file: TFile, sourcePath: string, omitMdExtension?: boolean) => string;
@@ -328,7 +324,6 @@ type FileExplorerItemLike = {
   collapseEl?: HTMLElement;
   childrenEl?: HTMLElement;
   tagEl?: HTMLElement;
-  setCollapsed?: (collapsed: boolean) => void;
   onSelfClick?: (event: FileExplorerClickEvent) => void;
   __folderAndGraphsPlusOriginalOnSelfClick?: (event: FileExplorerClickEvent) => void;
 };
@@ -381,9 +376,6 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   private nodePluginColorsById = new Map<string, GraphColor>();
   private iWorkPackageFilesByPath = new Map<string, IWorkPackageFile>();
   private iWorkPackageFilesByBasename = new Map<string, IWorkPackageFile[]>();
-  private patchedVault: PatchableVault | null = null;
-  private originalVaultGetFiles: PatchableVault["getFiles"] | null = null;
-  private patchedVaultGetFiles: PatchableVault["getFiles"] | null = null;
   private patchedMetadataCache: PatchableMetadataCache | null = null;
   private originalGetFirstLinkpathDest: PatchableMetadataCache["getFirstLinkpathDest"] | null = null;
   private patchedGetFirstLinkpathDest: PatchableMetadataCache["getFirstLinkpathDest"] | null = null;
@@ -1719,7 +1711,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   }
 
   private installIWorkPackageFilePatches(): void {
-    this.installIWorkPackageVaultPatch();
+    // Keep package folders in Obsidian's real vault tree. Adding synthetic files
+    // with the same paths to getFiles() can make File Explorer lose those rows.
     this.installIWorkPackageMetadataPatch();
   }
 
@@ -1727,45 +1720,11 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     this.iWorkPackageFilesByPath.clear();
     this.iWorkPackageFilesByBasename.clear();
     this.restoreIWorkPackageMetadataPatch();
-    this.restoreIWorkPackageVaultPatch();
     this.restoreIWorkPackageFileExplorerItems();
     if (refreshViews) {
       this.refreshFileExplorerLeaves();
       this.refreshGraphsAfterSettingsChange();
     }
-  }
-
-  private installIWorkPackageVaultPatch(): void {
-    const vault = this.app.vault as PatchableVault;
-    if (this.patchedVault === vault && vault.getFiles === this.patchedVaultGetFiles) {
-      return;
-    }
-
-    this.restoreIWorkPackageVaultPatch();
-
-    const originalGetFiles = vault.getFiles;
-    const getIWorkPackageFiles = (): IWorkPackageFile[] => [...this.iWorkPackageFilesByPath.values()];
-    const patchedGetFiles: PatchableVault["getFiles"] = function folderAndGraphsPlusGetFilesPatch(): TFile[] {
-      const files = originalGetFiles.call(vault);
-      const paths = new Set(files.map((file) => file.path));
-      const packageFiles = getIWorkPackageFiles().filter((file) => !paths.has(file.path));
-      return [...files, ...packageFiles];
-    };
-
-    vault.getFiles = patchedGetFiles;
-    this.patchedVault = vault;
-    this.originalVaultGetFiles = originalGetFiles;
-    this.patchedVaultGetFiles = patchedGetFiles;
-  }
-
-  private restoreIWorkPackageVaultPatch(): void {
-    if (this.patchedVault && this.originalVaultGetFiles && this.patchedVault.getFiles === this.patchedVaultGetFiles) {
-      this.patchedVault.getFiles = this.originalVaultGetFiles;
-    }
-
-    this.patchedVault = null;
-    this.originalVaultGetFiles = null;
-    this.patchedVaultGetFiles = null;
   }
 
   private installIWorkPackageMetadataPatch(): void {
@@ -2035,14 +1994,10 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
   }
 
   private decorateIWorkPackageFileExplorerItem(item: FileExplorerItemLike, folder: TFolder): void {
-    item.setCollapsed?.(true);
-    item.el?.removeClasses(["nav-folder", "is-collapsed"]);
-    item.el?.addClasses(["nav-file", "folderandgraphs-plus-iwork-package-item"]);
-    item.selfEl?.addClasses(["nav-file-title", "tappable", "is-unsupported", "folderandgraphs-plus-iwork-package"]);
-    item.selfEl?.removeClasses(["nav-folder-title", "mod-collapsible"]);
-    const folderTitleContentEl = item.selfEl?.querySelector(".nav-folder-title-content");
-    folderTitleContentEl?.removeClass("nav-folder-title-content");
-    folderTitleContentEl?.addClass("nav-file-title-content");
+    // The File Explorer still owns this as a folder. Replacing its structural
+    // classes with nav-file classes makes the row disappear in virtualized views.
+    item.el?.addClass("folderandgraphs-plus-iwork-package-item");
+    item.selfEl?.addClass("folderandgraphs-plus-iwork-package");
     this.decorateIWorkFileExplorerIcon(item.selfEl);
     this.decorateIWorkFileExplorerTag(item.selfEl, folder.path);
     item.collapseEl?.addClass("folderandgraphs-plus-iwork-package-collapse");
@@ -2134,10 +2089,8 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
         delete item.__folderAndGraphsPlusOriginalOnSelfClick;
       }
 
-      item.selfEl?.removeClasses(["nav-file-title", "tappable", "is-unsupported", "folderandgraphs-plus-iwork-package"]);
-      item.selfEl?.addClasses(["nav-folder-title", "mod-collapsible"]);
-      item.el?.removeClasses(["nav-file", "folderandgraphs-plus-iwork-package-item"]);
-      item.el?.addClass("nav-folder");
+      item.selfEl?.removeClass("folderandgraphs-plus-iwork-package");
+      item.el?.removeClass("folderandgraphs-plus-iwork-package-item");
       item.collapseEl?.removeClass("folderandgraphs-plus-iwork-package-collapse");
       item.childrenEl?.removeClass("folderandgraphs-plus-iwork-package-children");
       item.selfEl?.querySelector<HTMLElement>(".folderandgraphs-plus-iwork-package-tag")?.remove();

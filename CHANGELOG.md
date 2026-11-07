@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.4.3
+
+- Keep iWork package rows visible and clickable in Obsidian 1.15 by preserving native File Explorer folder structure.
+- Hide the package disclosure control so directory-based .pages, .key, and .numbers documents look like files.
+- Avoid adding synthetic package files with duplicate paths to the vault-wide file inventory.
+
+
 ## 4.4.2
 
 - Remove the CSS `!important` declaration reported by Obsidian review and use narrow File Explorer selectors for iWork package internals instead.
