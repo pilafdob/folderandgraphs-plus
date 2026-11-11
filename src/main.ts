@@ -1,5 +1,6 @@
 import {
   AbstractInputSuggest,
+  Events,
   Plugin,
   PluginSettingTab,
   Setting,
@@ -99,6 +100,23 @@ type FolderAndGraphsPlusSettings = {
   folder2graph: Folder2GraphSettings;
 };
 
+type InterconnectivityOptionKey =
+  | "showFolderNodes"
+  | "showHeadingNodes"
+  | "weightNodesBySubtree"
+  | "nodeColor"
+  | "headingNodeColor";
+
+type InterconnectivityOptionValue = boolean | string;
+
+function isInterconnectivityOptionKey(key: string): key is InterconnectivityOptionKey {
+  return key === "showFolderNodes"
+    || key === "showHeadingNodes"
+    || key === "weightNodesBySubtree"
+    || key === "nodeColor"
+    || key === "headingNodeColor";
+}
+
 const DEFAULT_SETTINGS: FolderAndGraphsPlusSettings = {
   combineSameNameFolders: false,
   showFolderEmoji: DEFAULT_SHOW_FOLDER_EMOJI,
@@ -115,6 +133,10 @@ const DEFAULT_SETTINGS: FolderAndGraphsPlusSettings = {
     folderFilterList: [...DEFAULT_FOLDER2GRAPH_SETTINGS.folderFilterList]
   }
 };
+
+function isInterconnectivityReply(value: unknown): value is (api: unknown) => void {
+  return typeof value === "function";
+}
 
 function createDefaultSettings(): FolderAndGraphsPlusSettings {
   return {
@@ -360,6 +382,12 @@ type Folder2GraphInteractionController = {
 
 export default class FolderAndGraphsPlusPlugin extends Plugin {
   settings: FolderAndGraphsPlusSettings = createDefaultSettings();
+  private readonly interconnectivityApi = {
+    version: 1 as const,
+    read: (key: string, path?: string): unknown => this.readInterconnectivityOption(key, path),
+    prepare: (key: string, path: string | undefined, value: unknown): unknown =>
+      this.prepareInterconnectivityChange(key, path, value)
+  };
   private bundledFolder2Graph: Folder2GraphRuntimePlugin | null = null;
   private patchedPrototype: PatchableGraphNode | null = null;
   private originalGetFillColor: (() => GraphColor) | null = null;
@@ -390,6 +418,11 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     await this.loadBundledFolder2GraphIfNeeded();
     await this.refreshColorGroups();
     this.addSettingTab(new FolderAndGraphsPlusSettingTab(this.app, this));
+    const workspaceEvents: Events = this.app.workspace;
+    this.registerEvent(workspaceEvents.on("pilafdob:folderandgraphs-plus:api:v1", (...data: unknown[]) => {
+      const [reply] = data;
+      if (isInterconnectivityReply(reply)) reply(this.interconnectivityApi);
+    }));
 
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
@@ -1694,6 +1727,71 @@ export default class FolderAndGraphsPlusPlugin extends Plugin {
     if (refreshGraphs) {
       this.refreshGraphsAfterSettingsChange();
     }
+  }
+
+  private readInterconnectivityOption(key: string, path?: string): InterconnectivityOptionValue {
+    if (path !== undefined || !isInterconnectivityOptionKey(key)) {
+      throw new Error("Choose a supported Folder and Graphs Plus option; these options take no path.");
+    }
+    return this.settings.folder2graph[key];
+  }
+
+  private prepareInterconnectivityChange(
+    key: string,
+    path: string | undefined,
+    value: unknown
+  ): { before: InterconnectivityOptionValue; after: InterconnectivityOptionValue; apply: () => Promise<void> } {
+    if (path !== undefined) throw new Error("Folder and Graphs Plus options apply to the vault and take no path.");
+    const before = this.readInterconnectivityOption(key, path);
+    if (!isInterconnectivityOptionKey(key)) throw new Error("Choose a supported Folder and Graphs Plus option.");
+    const isColorOption = key === "nodeColor" || key === "headingNodeColor";
+    let after: InterconnectivityOptionValue;
+    if (isColorOption) {
+      if (typeof value !== "string" || !/^#[0-9a-f]{6}$/i.test(value) || !parseHexGraphColor(value)) {
+        throw new Error("Provide a supported Folder and Graphs Plus colour.");
+      }
+      after = value;
+    } else {
+      if (typeof value !== "boolean") throw new Error("Provide a supported Folder and Graphs Plus value.");
+      after = value;
+    }
+    return {
+      before,
+      after,
+      apply: async () => {
+        if (this.readInterconnectivityOption(key, path) !== before) {
+          throw new Error("The Folder and Graphs Plus option changed after the proposal was prepared.");
+        }
+        this.setInterconnectivityOption(key, after);
+        await this.saveFolder2GraphSettings();
+      }
+    };
+  }
+
+  private setInterconnectivityOption(key: InterconnectivityOptionKey, value: InterconnectivityOptionValue): void {
+    switch (key) {
+      case "showFolderNodes":
+        if (typeof value !== "boolean") break;
+        this.settings.folder2graph.showFolderNodes = value;
+        return;
+      case "showHeadingNodes":
+        if (typeof value !== "boolean") break;
+        this.settings.folder2graph.showHeadingNodes = value;
+        return;
+      case "weightNodesBySubtree":
+        if (typeof value !== "boolean") break;
+        this.settings.folder2graph.weightNodesBySubtree = value;
+        return;
+      case "nodeColor":
+        if (typeof value !== "string") break;
+        this.settings.folder2graph.nodeColor = value;
+        return;
+      case "headingNodeColor":
+        if (typeof value !== "string") break;
+        this.settings.folder2graph.headingNodeColor = value;
+        return;
+    }
+    throw new Error("Provide a supported Folder and Graphs Plus value.");
   }
 
   refreshIWorkPackageFileSupport(refreshViews = true): void {

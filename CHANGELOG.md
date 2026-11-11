@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.4.4
+
+- Expose a versioned API so compatible plugins can inspect and stage supported Folder2Graph options for user approval.
+
 ## 4.4.3
 
 - Keep iWork package rows visible and clickable in Obsidian 1.15 by preserving native File Explorer folder structure.
